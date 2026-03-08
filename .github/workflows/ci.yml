@@ -32,6 +32,11 @@ jobs:
       - name: Run staticcheck
         run: staticcheck ./...
 
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.2
+
       - name: Run tests with race and coverage
         run: go test ./... -race -coverprofile=coverage.out
 
