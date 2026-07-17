@@ -171,6 +171,7 @@ Input fields:
 | `model` | No | Codex model to run. Call `codex_list_models` to discover the available models. Defaults to the server default model. If the server sets `allow_models`, any other model is rejected |
 | `reasoning_effort` | No | Reasoning effort for the run (e.g. `low`, `medium`, `high`, `xhigh`). `codex_list_models` reports which levels each model supports. Defaults to the server default |
 | `profile` | No | Per-request Codex profile override |
+| `output_schema` | No | JSON Schema object describing the desired shape of `final_message` |
 | `sandbox` | No | Per-request sandbox override, used only when yolo is disabled in server config |
 | `timeout_ms` | No | Per-request timeout in milliseconds |
 | `skip_git_repo_check` | No | Overrides automatic Git repository detection |
@@ -181,6 +182,7 @@ Output fields:
 | --- | --- |
 | `thread_id` | Codex thread ID observed in the JSONL stream |
 | `final_message` | Final assistant message returned by Codex |
+| `structured_output` | Final assistant message parsed as JSON (when `output_schema` is provided and the parse succeeds) |
 | `usage` | Token usage summary |
 | `elapsed_ms` | End-to-end execution time |
 | `exit_code` | Process exit code |

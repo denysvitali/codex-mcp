@@ -49,18 +49,20 @@ type RunRequest struct {
 	ReasoningEffort  string
 	Profile          string
 	Sandbox          string
+	OutputSchema     map[string]any
 	TimeoutMS        int
 	SkipGitRepoCheck *bool
 }
 
 type RunResult struct {
-	ThreadID      string `json:"thread_id"`
-	FinalMessage  string `json:"final_message"`
-	Usage         Usage  `json:"usage"`
-	ElapsedMS     int64  `json:"elapsed_ms"`
-	ExitCode      int    `json:"exit_code"`
-	RawEventCount int    `json:"raw_event_count"`
-	StderrTail    string `json:"stderr_tail,omitempty"`
+	ThreadID         string `json:"thread_id"`
+	FinalMessage     string `json:"final_message"`
+	StructuredOutput *any   `json:"structured_output,omitempty"`
+	Usage            Usage  `json:"usage"`
+	ElapsedMS        int64  `json:"elapsed_ms"`
+	ExitCode         int    `json:"exit_code"`
+	RawEventCount    int    `json:"raw_event_count"`
+	StderrTail       string `json:"stderr_tail,omitempty"`
 }
 
 type Usage struct {
@@ -144,10 +146,18 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	defer func() { <-r.semaphore }()
 
-	args, yolo, err := r.buildArgs(ctx, cwd, req)
+	args, yolo, outputSchemaPath, err := r.buildArgs(ctx, cwd, req)
 	if err != nil {
 		return RunResult{}, err
 	}
+	defer func() {
+		if outputSchemaPath == "" {
+			return
+		}
+		if err := os.Remove(outputSchemaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			r.logger.WithError(err).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file")
+		}
+	}()
 
 	runCtx := ctx
 	cancel := func() {}
@@ -312,10 +322,45 @@ func (r *Runner) checkModelAllowed(model string) error {
 	return fmt.Errorf("model %q is not allowed; allowed models: %s", model, strings.Join(r.cfg.AllowModels, ", "))
 }
 
-func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]string, bool, error) {
-	yolo := r.cfg.DefaultYolo
+func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) (args []string, yolo bool, outputSchemaPath string, err error) {
+	yolo = r.cfg.DefaultYolo
+	args = []string{"exec"}
+	outputSchemaPath = ""
+	defer func() {
+		if err == nil || outputSchemaPath == "" {
+			return
+		}
+		if removeErr := os.Remove(outputSchemaPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			r.logger.WithError(removeErr).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file after buildArgs error")
+		}
+	}()
+	if req.OutputSchema != nil {
+		path, err := os.CreateTemp("", "codex-output-schema-*.json")
+		if err != nil {
+			return nil, false, "", fmt.Errorf("create temporary output schema file: %w", err)
+		}
 
-	args := []string{"exec"}
+		payload, err := json.Marshal(req.OutputSchema)
+		if err != nil {
+			_ = os.Remove(path.Name())
+			_ = path.Close()
+			return nil, false, "", fmt.Errorf("marshal output_schema: %w", err)
+		}
+
+		if _, err := path.Write(payload); err != nil {
+			_ = path.Close()
+			_ = os.Remove(path.Name())
+			return nil, false, "", fmt.Errorf("write output schema file: %w", err)
+		}
+		if err := path.Close(); err != nil {
+			_ = os.Remove(path.Name())
+			return nil, false, "", fmt.Errorf("close output schema file: %w", err)
+		}
+
+		outputSchemaPath = path.Name()
+		args = append(args, "--output-schema", outputSchemaPath)
+	}
+
 	if req.ThreadID != "" {
 		args = append(args, "resume", req.ThreadID)
 	}
@@ -333,7 +378,7 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 	}
 	if model != "" {
 		if err := r.checkModelAllowed(model); err != nil {
-			return nil, false, err
+			return nil, false, outputSchemaPath, err
 		}
 		args = append(args, "--model", model)
 	}
@@ -342,7 +387,7 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 		effort = r.cfg.DefaultReasoningEffort
 	}
 	if err := validateReasoningEffort(effort); err != nil {
-		return nil, false, err
+		return nil, false, outputSchemaPath, err
 	}
 	if effort != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
@@ -365,14 +410,14 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 
 	skipGitRepoCheck, err := r.resolveSkipGitRepoCheck(ctx, cwd, req.SkipGitRepoCheck)
 	if err != nil {
-		return nil, false, err
+		return nil, false, outputSchemaPath, err
 	}
 	if skipGitRepoCheck {
 		args = append(args, "--skip-git-repo-check")
 	}
 
 	args = append(args, req.Prompt)
-	return args, yolo, nil
+	return args, yolo, outputSchemaPath, nil
 }
 
 func (r *Runner) resolveCwd(requested string) (string, error) {

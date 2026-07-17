@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -31,15 +32,16 @@ type runner interface {
 }
 
 type CodexExecInput struct {
-	Prompt           string `json:"prompt" jsonschema:"Instructions to send to Codex."`
-	Cwd              string `json:"cwd,omitempty" jsonschema:"Working directory for the Codex run. Relative paths resolve from the server root."`
-	ThreadID         string `json:"thread_id,omitempty" jsonschema:"Existing Codex thread ID to resume."`
-	Model            string `json:"model,omitempty" jsonschema:"Codex model to run. Call the codex_list_models tool to discover the available models; if the server restricts the selectable models, codex_list_models only reports those. If omitted, the server default model is used."`
-	ReasoningEffort  string `json:"reasoning_effort,omitempty" jsonschema:"Reasoning effort for the run, e.g. low, medium, high or xhigh. The codex_list_models tool reports which levels each model supports. If omitted, the server default is used."`
-	Profile          string `json:"profile,omitempty" jsonschema:"Optional Codex profile override."`
-	Sandbox          string `json:"sandbox,omitempty" jsonschema:"Sandbox mode used only when yolo is disabled in the server config. One of: read-only, workspace-write, danger-full-access."`
-	TimeoutMS        int    `json:"timeout_ms,omitempty" jsonschema:"Optional per-run timeout in milliseconds. The run is cancelled if the deadline is reached."`
-	SkipGitRepoCheck *bool  `json:"skip_git_repo_check,omitempty" jsonschema:"Override automatic git repository detection."`
+	Prompt           string         `json:"prompt" jsonschema:"Instructions to send to Codex."`
+	Cwd              string         `json:"cwd,omitempty" jsonschema:"Working directory for the Codex run. Relative paths resolve from the server root."`
+	ThreadID         string         `json:"thread_id,omitempty" jsonschema:"Existing Codex thread ID to resume."`
+	Model            string         `json:"model,omitempty" jsonschema:"Codex model to run. Call the codex_list_models tool to discover the available models; if the server restricts the selectable models, codex_list_models only reports those. If omitted, the server default model is used."`
+	ReasoningEffort  string         `json:"reasoning_effort,omitempty" jsonschema:"Reasoning effort for the run, e.g. low, medium, high or xhigh. The codex_list_models tool reports which levels each model supports. If omitted, the server default is used."`
+	Profile          string         `json:"profile,omitempty" jsonschema:"Optional Codex profile override."`
+	OutputSchema     map[string]any `json:"output_schema,omitempty" jsonschema:"Optional JSON Schema object describing the desired final-message output shape."`
+	Sandbox          string         `json:"sandbox,omitempty" jsonschema:"Sandbox mode used only when yolo is disabled in the server config. One of: read-only, workspace-write, danger-full-access."`
+	TimeoutMS        int            `json:"timeout_ms,omitempty" jsonschema:"Optional per-run timeout in milliseconds. The run is cancelled if the deadline is reached."`
+	SkipGitRepoCheck *bool          `json:"skip_git_repo_check,omitempty" jsonschema:"Override automatic git repository detection."`
 }
 
 type ListModelsInput struct{}
@@ -120,6 +122,7 @@ func (b Builder) handleCodexExec(ctx context.Context, _ *mcp.CallToolRequest, ar
 		Model:            args.Model,
 		ReasoningEffort:  args.ReasoningEffort,
 		Profile:          args.Profile,
+		OutputSchema:     args.OutputSchema,
 		Sandbox:          args.Sandbox,
 		TimeoutMS:        args.TimeoutMS,
 		SkipGitRepoCheck: args.SkipGitRepoCheck,
@@ -127,6 +130,14 @@ func (b Builder) handleCodexExec(ctx context.Context, _ *mcp.CallToolRequest, ar
 	if err != nil {
 		return nil, codexcli.RunResult{}, err
 	}
+
+	if args.OutputSchema != nil {
+		var parsed any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(result.FinalMessage)), &parsed); err == nil {
+			result.StructuredOutput = &parsed
+		}
+	}
+
 	return nil, result, nil
 }
 

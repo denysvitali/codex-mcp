@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -98,6 +99,7 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 		Model:            "gpt-test",
 		ReasoningEffort:  "high",
 		Profile:          "fast",
+		OutputSchema:     map[string]any{"type": "object"},
 		Sandbox:          "read-only",
 		TimeoutMS:        123,
 		SkipGitRepoCheck: &skip,
@@ -115,6 +117,47 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 	}
 	if req.SkipGitRepoCheck == nil || !*req.SkipGitRepoCheck {
 		t.Fatalf("expected skip_git_repo_check to be forwarded: %+v", req)
+	}
+	if !reflect.DeepEqual(req.OutputSchema, map[string]any{"type": "object"}) {
+		t.Fatalf("unexpected output schema: %+v", req.OutputSchema)
+	}
+}
+
+func TestHandleCodexExecReturnsStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	builder := Builder{
+		Runner: &capturingRunner{},
+		Logger: logrus.New(),
+	}
+	runner := builder.Runner.(*capturingRunner)
+	runner.result = codexcli.RunResult{FinalMessage: `{"status":"done"}`}
+
+	_, result, err := builder.handleCodexExec(context.Background(), nil, CodexExecInput{
+		Prompt:       "run",
+		OutputSchema: map[string]any{"type": "object"},
+	})
+	if err != nil {
+		t.Fatalf("handleCodexExec() error = %v", err)
+	}
+	if result.StructuredOutput == nil {
+		t.Fatal("expected structured_output when final message is valid JSON")
+	}
+	if !reflect.DeepEqual(*result.StructuredOutput, map[string]any{"status": "done"}) {
+		t.Fatalf("expected structured_output from JSON final message, got %+v", result.StructuredOutput)
+	}
+
+	runner.result = codexcli.RunResult{FinalMessage: "not json"}
+
+	_, result, err = builder.handleCodexExec(context.Background(), nil, CodexExecInput{
+		Prompt:       "run",
+		OutputSchema: map[string]any{"type": "object"},
+	})
+	if err != nil {
+		t.Fatalf("handleCodexExec() error = %v", err)
+	}
+	if result.StructuredOutput != nil {
+		t.Fatalf("expected no structured_output when final message is not valid JSON, got %+v", result.StructuredOutput)
 	}
 }
 
@@ -260,12 +303,35 @@ func TestServerEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools() error = %v", err)
 	}
+	var codexExecTool *mcp.Tool
+	var foundCodexExec bool
 	names := make(map[string]bool, len(tools.Tools))
 	for _, tool := range tools.Tools {
 		names[tool.Name] = true
+		if tool.Name == "codex_exec" {
+			codexExecTool = tool
+			foundCodexExec = true
+		}
 	}
 	if !names["codex_exec"] || !names["codex_list_models"] {
 		t.Fatalf("expected both tools to be registered, got %v", names)
+	}
+	if !foundCodexExec {
+		t.Fatalf("codex_exec tool not found in ListTools response")
+	}
+	if codexExecTool == nil {
+		t.Fatalf("codex_exec tool was not captured despite registration")
+	}
+	inputSchema, ok := codexExecTool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("expected codex_exec input schema map, got %T", codexExecTool.InputSchema)
+	}
+	properties, ok := inputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected codex_exec schema properties map, got %T", inputSchema["properties"])
+	}
+	if _, ok := properties["output_schema"]; !ok {
+		t.Fatalf("expected codex_exec input schema to include output_schema, got %v", properties)
 	}
 
 	execResult, err := session.CallTool(ctx, &mcp.CallToolParams{

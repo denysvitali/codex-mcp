@@ -3,10 +3,12 @@ package codexcli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +185,126 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 	}
 	if !strings.Contains(args, "--sandbox\nread-only") {
 		t.Fatalf("expected sandbox flag in args: %q", args)
+	}
+}
+
+func TestRunnerWritesOutputSchemaArg(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+args=("$@")
+for i in "${!args[@]}"; do
+  if [[ "${args[$i]}" == "--output-schema" && $((i+1)) -lt ${#args[@]} ]]; then
+    cp "${args[$((i+1))]}" "`+filepath.Join(root, `schema-copy.json`)+`"
+    break
+  fi
+done
+
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-schema"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"result": map[string]any{
+				"type": "string",
+			},
+		},
+	}
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:       "continue",
+		OutputSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	schemaPath := getArgValue(string(argsData), "--output-schema")
+	if schemaPath == "" {
+		t.Fatalf("expected --output-schema flag, got %q", string(argsData))
+	}
+
+	schemaData, err := os.ReadFile(filepath.Join(root, "schema-copy.json"))
+	if err != nil {
+		t.Fatalf("read output schema file: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(schemaData, &got); err != nil {
+		t.Fatalf("parse output schema json: %v", err)
+	}
+	if !reflect.DeepEqual(got, schema) {
+		t.Fatalf("unexpected output schema: got %+v, want %+v", got, schema)
+	}
+
+	if _, err := os.Stat(schemaPath); !os.IsNotExist(err) {
+		t.Fatalf("expected temporary output schema file to be removed after run")
+	}
+}
+
+func TestRunnerRemovesOutputSchemaFileOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-timeout"}'
+sleep 1
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"late"}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:       "continue",
+		OutputSchema: map[string]any{"type": "object"},
+		TimeoutMS:    50,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected TimeoutError, got %T", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	schemaPath := getArgValue(string(argsData), "--output-schema")
+	if schemaPath == "" {
+		t.Fatalf("expected --output-schema flag, got %q", string(argsData))
+	}
+	if _, err := os.Stat(schemaPath); !os.IsNotExist(err) {
+		t.Fatalf("expected temporary output schema file to be removed after timeout: %v", err)
 	}
 }
 
@@ -833,6 +955,20 @@ func writeFile(t *testing.T, path string, content string) {
 
 func fakeCodexScript(body string) string {
 	return body
+}
+
+func getArgValue(argsText, key string) string {
+	args := strings.Fields(argsText)
+	for i, arg := range args {
+		if arg != key {
+			continue
+		}
+		if i+1 >= len(args) {
+			return ""
+		}
+		return args[i+1]
+	}
+	return ""
 }
 
 func initGitRepo(t *testing.T, dir string) {
