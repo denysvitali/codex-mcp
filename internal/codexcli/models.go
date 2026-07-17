@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"sort"
 	"time"
 )
@@ -40,22 +41,32 @@ const listModelsTimeout = 15 * time.Second
 
 // ListModels returns the models advertised by the local Codex CLI model
 // catalog (`codex debug models`), restricted to models with "list" visibility
-// and ordered by Codex's own priority. The catalog is baked into the Codex
-// binary, so the result is cached for the lifetime of the process.
+// and ordered by Codex's own priority. When the server is configured with an
+// allow-list of model slugs, only those models are returned. The catalog is
+// baked into the Codex binary, so the unfiltered result is cached for the
+// lifetime of the process.
 func (r *Runner) ListModels(ctx context.Context) ([]Model, error) {
 	r.modelsMu.Lock()
 	defer r.modelsMu.Unlock()
 
-	if r.modelsCache != nil {
-		return r.modelsCache, nil
+	if r.modelsCache == nil {
+		models, err := r.fetchModels(ctx)
+		if err != nil {
+			return nil, err
+		}
+		r.modelsCache = models
 	}
 
-	models, err := r.fetchModels(ctx)
-	if err != nil {
-		return nil, err
+	if len(r.cfg.AllowModels) == 0 {
+		return r.modelsCache, nil
 	}
-	r.modelsCache = models
-	return models, nil
+	filtered := make([]Model, 0, len(r.cfg.AllowModels))
+	for _, model := range r.modelsCache {
+		if slices.Contains(r.cfg.AllowModels, model.Slug) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered, nil
 }
 
 func (r *Runner) fetchModels(ctx context.Context) ([]Model, error) {

@@ -806,3 +806,89 @@ func initGitRepo(t *testing.T, dir string) {
 		t.Fatalf("git init %s: %v\n%s", dir, err, output)
 	}
 }
+
+func TestRunnerRejectsModelOutsideAllowList(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+echo "should not run" >&2
+exit 9
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		AllowModels:       []string{"gpt-a", "gpt-b"},
+		DefaultYolo:       true,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "hi", Model: "gpt-c"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := `model "gpt-c" is not allowed; allowed models: gpt-a, gpt-b`
+	if err.Error() != want {
+		t.Fatalf("expected %q, got %q", want, err.Error())
+	}
+}
+
+func TestRunnerRejectsDefaultModelOutsideAllowList(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+echo "should not run" >&2
+exit 9
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		AllowModels:       []string{"gpt-a"},
+		DefaultModel:      "gpt-c",
+		DefaultYolo:       true,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "hi"})
+	if err == nil || !strings.Contains(err.Error(), `model "gpt-c" is not allowed`) {
+		t.Fatalf("expected allow-list error, got %v", err)
+	}
+}
+
+func TestRunnerAllowsModelWithinAllowList(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-allow"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		AllowModels:       []string{" gpt-a ", "", "gpt-b"},
+		DefaultYolo:       true,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	if _, err := runner.Run(context.Background(), RunRequest{Prompt: "hi", Model: "gpt-a"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if args := string(argsData); !strings.Contains(args, "--model") || !strings.Contains(args, "gpt-a") {
+		t.Fatalf("expected --model gpt-a in args, got %q", args)
+	}
+}

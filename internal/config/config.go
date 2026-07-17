@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,6 +23,7 @@ type Config struct {
 	CodexBin               string
 	Root                   string
 	AllowDirs              []string
+	AllowModels            []string
 	DefaultYolo            bool
 	DefaultModel           string
 	DefaultReasoningEffort string
@@ -48,6 +50,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid default sandbox: %s", c.DefaultSandbox)
 	}
 
+	if c.DefaultModel != "" && len(c.AllowModels) > 0 && !slices.Contains(c.AllowModels, c.DefaultModel) {
+		return fmt.Errorf("default model %q is not in allow_models", c.DefaultModel)
+	}
+
 	return nil
 }
 
@@ -55,6 +61,7 @@ type FileConfig struct {
 	CodexBin          string   `yaml:"codex_bin"`
 	Root              string   `yaml:"root"`
 	AllowDirs         []string `yaml:"allow_dirs"`
+	AllowModels       []string `yaml:"allow_models"`
 	Default           Defaults `yaml:"default"`
 	MaxConcurrentRuns int      `yaml:"max_concurrent_runs"`
 	LogLevel          string   `yaml:"log_level"`
@@ -97,6 +104,9 @@ func (c *Config) ApplyFile(fileCfg FileConfig) {
 	}
 	if len(fileCfg.AllowDirs) > 0 {
 		c.AllowDirs = append([]string(nil), fileCfg.AllowDirs...)
+	}
+	if len(fileCfg.AllowModels) > 0 {
+		c.AllowModels = append([]string(nil), fileCfg.AllowModels...)
 	}
 	if fileCfg.Default.Yolo != nil {
 		c.DefaultYolo = *fileCfg.Default.Yolo
@@ -152,6 +162,33 @@ func NormalizePath(path string) (string, error) {
 	}
 
 	return resolved, nil
+}
+
+// NormalizeModels trims model slugs, drops empties, and deduplicates them,
+// so comma-separated flag values like "gpt-a, gpt-b" compare cleanly against
+// requested models.
+func NormalizeModels(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func NormalizePaths(paths []string) ([]string, error) {

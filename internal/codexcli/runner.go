@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,14 +30,15 @@ type Runner struct {
 }
 
 type RunnerConfig struct {
-	CodexBin                string
-	Root                    string
-	AllowDirs               []string
-	DefaultYolo             bool
-	DefaultModel            string
-	DefaultReasoningEffort  string
-	DefaultSandbox          string
-	MaxConcurrentRuns       int
+	CodexBin               string
+	Root                   string
+	AllowDirs              []string
+	AllowModels            []string
+	DefaultYolo            bool
+	DefaultModel           string
+	DefaultReasoningEffort string
+	DefaultSandbox         string
+	MaxConcurrentRuns      int
 }
 
 type RunRequest struct {
@@ -100,6 +102,13 @@ type itemEnvelope struct {
 }
 
 func NewRunner(cfg RunnerConfig, logger *logrus.Logger) *Runner {
+	allowModels := make([]string, 0, len(cfg.AllowModels))
+	for _, model := range cfg.AllowModels {
+		if trimmed := strings.TrimSpace(model); trimmed != "" {
+			allowModels = append(allowModels, trimmed)
+		}
+	}
+	cfg.AllowModels = allowModels
 	return &Runner{
 		cfg:       cfg,
 		logger:    logger,
@@ -251,8 +260,8 @@ func (e *TimeoutError) Error() string {
 }
 
 type RunError struct {
-	Err        error
-	ExitCode   int
+	Err      error
+	ExitCode int
 	// Message is the failure reason reported by Codex in the JSONL event
 	// stream, e.g. when a turn fails without a non-zero exit code.
 	Message    string
@@ -291,6 +300,18 @@ func validateReasoningEffort(effort string) error {
 	return nil
 }
 
+// checkModelAllowed enforces the optional allow-list of model slugs. An
+// empty allow-list permits every model.
+func (r *Runner) checkModelAllowed(model string) error {
+	if len(r.cfg.AllowModels) == 0 {
+		return nil
+	}
+	if slices.Contains(r.cfg.AllowModels, model) {
+		return nil
+	}
+	return fmt.Errorf("model %q is not allowed; allowed models: %s", model, strings.Join(r.cfg.AllowModels, ", "))
+}
+
 func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]string, bool, error) {
 	yolo := r.cfg.DefaultYolo
 
@@ -305,6 +326,9 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 		model = r.cfg.DefaultModel
 	}
 	if model != "" {
+		if err := r.checkModelAllowed(model); err != nil {
+			return nil, false, err
+		}
 		args = append(args, "--model", model)
 	}
 	effort := req.ReasoningEffort

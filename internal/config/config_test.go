@@ -2,8 +2,8 @@ package config
 
 import (
 	"os"
-	"reflect"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -145,6 +145,31 @@ func TestConfigValidate(t *testing.T) {
 			name: "valid danger-full-access sandbox",
 			mutate: func(cfg Config) Config {
 				cfg.DefaultSandbox = "danger-full-access"
+				return cfg
+			},
+		},
+		{
+			name: "default model within allow list",
+			mutate: func(cfg Config) Config {
+				cfg.DefaultModel = "gpt-a"
+				cfg.AllowModels = []string{"gpt-a", "gpt-b"}
+				return cfg
+			},
+		},
+		{
+			name: "default model outside allow list",
+			mutate: func(cfg Config) Config {
+				cfg.DefaultModel = "gpt-c"
+				cfg.AllowModels = []string{"gpt-a", "gpt-b"}
+				return cfg
+			},
+			wantErr: `default model "gpt-c" is not in allow_models`,
+		},
+		{
+			name: "empty default model with allow list",
+			mutate: func(cfg Config) Config {
+				cfg.DefaultModel = ""
+				cfg.AllowModels = []string{"gpt-a"}
 				return cfg
 			},
 		},
@@ -319,6 +344,57 @@ func TestNormalizePaths(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+func TestNormalizeModels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{
+			name:  "nil stays nil",
+			input: nil,
+			want:  nil,
+		},
+		{
+			name:  "empty stays nil",
+			input: []string{},
+			want:  nil,
+		},
+		{
+			name:  "trims whitespace from comma-separated flag values",
+			input: []string{"gpt-a", " gpt-b", "gpt-c "},
+			want:  []string{"gpt-a", "gpt-b", "gpt-c"},
+		},
+		{
+			name:  "drops empties",
+			input: []string{"gpt-a", "", "  "},
+			want:  []string{"gpt-a"},
+		},
+		{
+			name:  "deduplicates preserving order",
+			input: []string{"gpt-b", "gpt-a", "gpt-b"},
+			want:  []string{"gpt-b", "gpt-a"},
+		},
+		{
+			name:  "all empties normalizes to nil",
+			input: []string{"", " "},
+			want:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := NormalizeModels(tt.input); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
 			}
 		})
 	}

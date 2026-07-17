@@ -51,6 +51,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&cliCfg.CodexBin, "codex-bin", cliCfg.CodexBin, "Path to the codex binary")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.Root, "root", "", "Primary allowed workspace root")
 	rootCmd.PersistentFlags().StringSliceVar(&cliCfg.AllowDirs, "allow-dir", nil, "Additional allowed workspace directories")
+	rootCmd.PersistentFlags().StringSliceVar(&cliCfg.AllowModels, "allow-model", nil, "Restrict the models callers may use to these slugs; repeatable or comma-separated (empty: all catalog models)")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.ConfigPath, "config", cliCfg.ConfigPath, "Path to config YAML file")
 	rootCmd.PersistentFlags().BoolVar(&cliCfg.DefaultYolo, "default-yolo", cliCfg.DefaultYolo, "Enable unrestricted Codex execution by default")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultModel, "default-model", cliCfg.DefaultModel, "Default Codex model to use when requests do not specify one (empty: use the Codex CLI's own default)")
@@ -102,6 +103,7 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 				return err
 			}
 			cfg.AllowDirs = allowDirs
+			cfg.AllowModels = config.NormalizeModels(cfg.AllowModels)
 
 			if _, err := exec.LookPath(cfg.CodexBin); err != nil {
 				return fmt.Errorf("resolve codex binary %q: %w", cfg.CodexBin, err)
@@ -123,6 +125,7 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 				CodexBin:               cfg.CodexBin,
 				Root:                   cfg.Root,
 				AllowDirs:              cfg.AllowDirs,
+				AllowModels:            cfg.AllowModels,
 				DefaultYolo:            cfg.DefaultYolo,
 				DefaultModel:           cfg.DefaultModel,
 				DefaultReasoningEffort: cfg.DefaultReasoningEffort,
@@ -141,6 +144,7 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 			logger.WithFields(logrus.Fields{
 				"root":                     cfg.Root,
 				"allow_dirs":               cfg.AllowDirs,
+				"allow_models":             cfg.AllowModels,
 				"default_yolo":             cfg.DefaultYolo,
 				"default_model":            cfg.DefaultModel,
 				"default_reasoning_effort": cfg.DefaultReasoningEffort,
@@ -182,6 +186,9 @@ func applyChangedFlags(cmd *cobra.Command, cfg *config.Config, cliCfg config.Con
 	}
 	if cmd.Flags().Changed("allow-dir") {
 		cfg.AllowDirs = append([]string(nil), cliCfg.AllowDirs...)
+	}
+	if cmd.Flags().Changed("allow-model") {
+		cfg.AllowModels = append([]string(nil), cliCfg.AllowModels...)
 	}
 	if cmd.Flags().Changed("config") {
 		cfg.ConfigPath = cliCfg.ConfigPath

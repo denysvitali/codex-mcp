@@ -172,3 +172,29 @@ exit 3
 		t.Fatalf("expected command error, got %v", err)
 	}
 }
+
+func TestListModelsFiltersToAllowList(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+cat <<'EOF'
+`+fakeCatalog+`
+EOF
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		AllowModels:       []string{"gpt-b", "gpt-missing"},
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	models, err := runner.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 1 || models[0].Slug != "gpt-b" {
+		t.Fatalf("expected only gpt-b, got %+v", models)
+	}
+}

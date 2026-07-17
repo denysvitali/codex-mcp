@@ -54,6 +54,9 @@ codex_bin: codex
 root: /path/to/workspace
 allow_dirs:
   - /path/to/extra-worktree
+allow_models:
+  - gpt-5.4-mini
+  - gpt-5.4
 
 default:
   yolo: true
@@ -72,6 +75,7 @@ log_level: info
 | `codex_bin` | string | Path to the Codex CLI binary. Defaults to `codex`. |
 | `root` | string | Primary allowed workspace root. If omitted, the server falls back to the current working directory at startup. |
 | `allow_dirs` | list of strings | Additional allowed directories for `cwd` resolution. |
+| `allow_models` | list of strings | Restricts which model slugs callers may pass to `codex_exec`. `codex_list_models` then only reports these models. Defaults to empty, which allows the full catalog. |
 | `default.yolo` | bool | Whether to run Codex in unrestricted mode by default. Defaults to `true`. |
 | `default.model` | string | Default model passed to Codex when a request does not specify one. Defaults to empty, which lets the Codex CLI pick its own default model. |
 | `default.reasoning_effort` | string | Default reasoning effort when a request does not specify one (e.g. `low`, `medium`, `high`, `xhigh`). Defaults to empty, which uses the model's own default. |
@@ -87,6 +91,7 @@ The server can be configured entirely from flags:
 codex-mcp serve \
   --root /path/to/workspace \
   --allow-dir /path/to/extra-worktree \
+  --allow-model gpt-5.4-mini --allow-model gpt-5.4 \
   --codex-bin /usr/local/bin/codex \
   --default-yolo=false \
   --default-sandbox workspace-write \
@@ -103,6 +108,7 @@ Available flags:
 | `--codex-bin` | Path to the Codex binary |
 | `--root` | Primary allowed workspace root |
 | `--allow-dir` | Additional allowed directory; repeatable |
+| `--allow-model` | Restrict callers to this model slug; repeatable or comma-separated (empty: all catalog models) |
 | `--config` | Path to a YAML config file |
 | `--default-yolo` | Enable unrestricted Codex execution by default |
 | `--default-model` | Default model when requests omit `model` (empty: Codex CLI's own default) |
@@ -162,7 +168,7 @@ Input fields:
 | `prompt` | Yes | Instructions sent to Codex |
 | `cwd` | No | Working directory for the run; relative paths resolve from the server root |
 | `thread_id` | No | Existing Codex thread ID to resume |
-| `model` | No | Codex model to run. Call `codex_list_models` to discover the available models. Defaults to the server default model |
+| `model` | No | Codex model to run. Call `codex_list_models` to discover the available models. Defaults to the server default model. If the server sets `allow_models`, any other model is rejected |
 | `reasoning_effort` | No | Reasoning effort for the run (e.g. `low`, `medium`, `high`, `xhigh`). `codex_list_models` reports which levels each model supports. Defaults to the server default |
 | `profile` | No | Per-request Codex profile override |
 | `sandbox` | No | Per-request sandbox override, used only when yolo is disabled in server config |
@@ -228,6 +234,7 @@ At runtime the flow is:
 This project executes a local coding agent and should be deployed with deliberate constraints.
 
 - Directory access is restricted to `root` and `allow_dirs`, and symlinks are resolved before execution to prevent simple path-escape tricks.
+- Model usage can be restricted with `allow_models` / `--allow-model`: requests naming any other model are rejected before Codex starts, and `codex_list_models` only advertises the allowed slugs. A configured `default.model` outside the allow-list is rejected at startup.
 - Relative `cwd` values are resolved from the configured root, not from the caller's arbitrary current directory.
 - Concurrent Codex runs are bounded by `max_concurrent_runs` to reduce resource contention.
 - The default configuration enables yolo mode (`default.yolo: true`), which maps to Codex's unrestricted bypass flag. This is convenient but materially less restrictive than sandboxed execution.
