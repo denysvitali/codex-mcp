@@ -136,7 +136,7 @@ func (b Builder) handleCodexExec(ctx context.Context, _ *mcp.CallToolRequest, ar
 	}
 
 	if args.OutputSchema != nil {
-		var parsed any
+		var parsed map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(result.FinalMessage)), &parsed); err == nil {
 			result.StructuredOutput = &parsed
 		}

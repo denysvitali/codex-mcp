@@ -57,14 +57,18 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	ThreadID         string `json:"thread_id"`
-	FinalMessage     string `json:"final_message"`
-	StructuredOutput *any   `json:"structured_output,omitempty"`
-	Usage            Usage  `json:"usage"`
-	ElapsedMS        int64  `json:"elapsed_ms"`
-	ExitCode         int    `json:"exit_code"`
-	RawEventCount    int    `json:"raw_event_count"`
-	StderrTail       string `json:"stderr_tail,omitempty"`
+	ThreadID     string `json:"thread_id"`
+	FinalMessage string `json:"final_message"`
+	// StructuredOutput holds the parsed final message when OutputSchema was
+	// requested. It is a map (not any) so the reflected MCP output schema is
+	// a JSON Schema object; a boolean `true` schema is rejected by some
+	// clients. Non-object final messages simply omit the field.
+	StructuredOutput *map[string]any `json:"structured_output,omitempty"`
+	Usage            Usage           `json:"usage"`
+	ElapsedMS        int64           `json:"elapsed_ms"`
+	ExitCode         int             `json:"exit_code"`
+	RawEventCount    int             `json:"raw_event_count"`
+	StderrTail       string          `json:"stderr_tail,omitempty"`
 }
 
 type Usage struct {
