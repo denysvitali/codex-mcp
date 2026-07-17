@@ -53,6 +53,14 @@ func TestHandleCodexExecValidation(t *testing.T) {
 			},
 			want: "invalid sandbox value: sandboxed",
 		},
+		{
+			name: "invalid reasoning effort",
+			args: CodexExecInput{
+				Prompt:          "run",
+				ReasoningEffort: `high";model="x`,
+			},
+			want: `invalid reasoning_effort value: high";model="x`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -88,6 +96,7 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 		Cwd:              "repo",
 		ThreadID:         "thread-1",
 		Model:            "gpt-test",
+		ReasoningEffort:  "high",
 		Profile:          "fast",
 		Sandbox:          "read-only",
 		TimeoutMS:        123,
@@ -101,7 +110,7 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 	}
 
 	req := runner.req
-	if req.Prompt != "ship it" || req.Cwd != "repo" || req.ThreadID != "thread-1" || req.Model != "gpt-test" || req.Profile != "fast" || req.Sandbox != "read-only" || req.TimeoutMS != 123 {
+	if req.Prompt != "ship it" || req.Cwd != "repo" || req.ThreadID != "thread-1" || req.Model != "gpt-test" || req.ReasoningEffort != "high" || req.Profile != "fast" || req.Sandbox != "read-only" || req.TimeoutMS != 123 {
 		t.Fatalf("unexpected request forwarded to runner: %+v", req)
 	}
 	if req.SkipGitRepoCheck == nil || !*req.SkipGitRepoCheck {
@@ -183,9 +192,10 @@ func TestHandleListModels(t *testing.T) {
 		{Slug: "gpt-b", DisplayName: "GPT B", DefaultReasoningLevel: "medium"},
 	}
 	builder := Builder{
-		Runner:       stubRunner{models: models},
-		Logger:       logrus.New(),
-		DefaultModel: "gpt-a",
+		Runner:                 stubRunner{models: models},
+		Logger:                 logrus.New(),
+		DefaultModel:           "gpt-a",
+		DefaultReasoningEffort: "medium",
 	}
 
 	_, result, err := builder.handleListModels(context.Background(), nil, ListModelsInput{})
@@ -197,6 +207,9 @@ func TestHandleListModels(t *testing.T) {
 	}
 	if result.DefaultModel != "gpt-a" {
 		t.Fatalf("unexpected default model: %q", result.DefaultModel)
+	}
+	if result.DefaultReasoningEffort != "medium" {
+		t.Fatalf("unexpected default reasoning effort: %q", result.DefaultReasoningEffort)
 	}
 }
 

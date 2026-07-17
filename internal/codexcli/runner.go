@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,16 +23,20 @@ type Runner struct {
 	cfg       RunnerConfig
 	logger    *logrus.Logger
 	semaphore chan struct{}
+
+	modelsMu    sync.Mutex
+	modelsCache []Model
 }
 
 type RunnerConfig struct {
-	CodexBin          string
-	Root              string
-	AllowDirs         []string
-	DefaultYolo       bool
-	DefaultModel      string
-	DefaultSandbox    string
-	MaxConcurrentRuns int
+	CodexBin                string
+	Root                    string
+	AllowDirs               []string
+	DefaultYolo             bool
+	DefaultModel            string
+	DefaultReasoningEffort  string
+	DefaultSandbox          string
+	MaxConcurrentRuns       int
 }
 
 type RunRequest struct {
@@ -39,6 +44,7 @@ type RunRequest struct {
 	Cwd              string
 	ThreadID         string
 	Model            string
+	ReasoningEffort  string
 	Profile          string
 	Sandbox          string
 	TimeoutMS        int
@@ -107,6 +113,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if req.TimeoutMS < 0 {
 		return RunResult{}, fmt.Errorf("timeout_ms must be non-negative: %d", req.TimeoutMS)
+	}
+	if err := validateReasoningEffort(req.ReasoningEffort); err != nil {
+		return RunResult{}, err
 	}
 
 	cwd, err := r.resolveCwd(req.Cwd)
@@ -266,6 +275,22 @@ func (e *RunError) Unwrap() error {
 	return e.Err
 }
 
+// validateReasoningEffort rejects effort values that could break out of the
+// TOML string in the -c model_reasoning_effort="<effort>" config override.
+// Codex reasoning efforts are single lowercase words (e.g. low, medium,
+// high, xhigh), so anything else is rejected up front.
+func validateReasoningEffort(effort string) error {
+	if effort == "" {
+		return nil
+	}
+	for _, ch := range effort {
+		if ch < 'a' || ch > 'z' {
+			return fmt.Errorf("invalid reasoning_effort value: %s", effort)
+		}
+	}
+	return nil
+}
+
 func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]string, bool, error) {
 	yolo := r.cfg.DefaultYolo
 
@@ -281,6 +306,16 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 	}
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	effort := req.ReasoningEffort
+	if effort == "" {
+		effort = r.cfg.DefaultReasoningEffort
+	}
+	if err := validateReasoningEffort(effort); err != nil {
+		return nil, false, err
+	}
+	if effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
 	}
 	if req.Profile != "" {
 		args = append(args, "--profile", req.Profile)

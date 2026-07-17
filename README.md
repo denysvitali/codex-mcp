@@ -8,6 +8,8 @@ It is built on the [official Model Context Protocol Go SDK](https://github.com/m
 
 - Exposes two structured MCP tools: `codex_exec` and `codex_list_models`
 - Lets the calling model choose the Codex model per run, with live discovery via `codex_list_models` (backed by `codex debug models`)
+- Lets the calling model choose the reasoning effort per run (`reasoning_effort`), with per-model supported levels reported by `codex_list_models`
+- Publishes MCP tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) so clients can render and gate tool calls appropriately
 - Runs over stdio, making it easy to plug into local MCP clients
 - Wraps Codex non-interactive execution with JSONL event parsing
 - Surfaces Codex failure reasons (e.g. unsupported model, usage limits) extracted from `error` / `turn.failed` events
@@ -56,6 +58,7 @@ allow_dirs:
 default:
   yolo: true
   model: gpt-5.4-mini
+  reasoning_effort: medium
   sandbox: workspace-write
 
 max_concurrent_runs: 4
@@ -71,6 +74,7 @@ log_level: info
 | `allow_dirs` | list of strings | Additional allowed directories for `cwd` resolution. |
 | `default.yolo` | bool | Whether to run Codex in unrestricted mode by default. Defaults to `true`. |
 | `default.model` | string | Default model passed to Codex when a request does not specify one. Defaults to empty, which lets the Codex CLI pick its own default model. |
+| `default.reasoning_effort` | string | Default reasoning effort when a request does not specify one (e.g. `low`, `medium`, `high`, `xhigh`). Defaults to empty, which uses the model's own default. |
 | `default.sandbox` | string | Sandbox used when `default.yolo` is `false`. Valid values: `read-only`, `workspace-write`, `danger-full-access`. |
 | `max_concurrent_runs` | integer | Maximum number of Codex processes allowed at once. Defaults to `4`. |
 | `log_level` | string | Logrus level. Valid values include `error`, `warn`, `info`, `debug`, `trace`. Defaults to `info`. |
@@ -87,6 +91,7 @@ codex-mcp serve \
   --default-yolo=false \
   --default-sandbox workspace-write \
   --default-model gpt-5.4-mini \
+  --default-reasoning-effort medium \
   --max-concurrent-runs 2 \
   --log-level info
 ```
@@ -101,6 +106,7 @@ Available flags:
 | `--config` | Path to a YAML config file |
 | `--default-yolo` | Enable unrestricted Codex execution by default |
 | `--default-model` | Default model when requests omit `model` (empty: Codex CLI's own default) |
+| `--default-reasoning-effort` | Default reasoning effort when requests omit `reasoning_effort` (empty: model's own default) |
 | `--default-sandbox` | Default sandbox when yolo is disabled |
 | `--max-concurrent-runs` | Maximum concurrent Codex runs |
 | `--log-level` | Logging verbosity |
@@ -157,6 +163,7 @@ Input fields:
 | `cwd` | No | Working directory for the run; relative paths resolve from the server root |
 | `thread_id` | No | Existing Codex thread ID to resume |
 | `model` | No | Codex model to run. Call `codex_list_models` to discover the available models. Defaults to the server default model |
+| `reasoning_effort` | No | Reasoning effort for the run (e.g. `low`, `medium`, `high`, `xhigh`). `codex_list_models` reports which levels each model supports. Defaults to the server default |
 | `profile` | No | Per-request Codex profile override |
 | `sandbox` | No | Per-request sandbox override, used only when yolo is disabled in server config |
 | `timeout_ms` | No | Per-request timeout in milliseconds |
@@ -191,8 +198,10 @@ Output fields:
 | --- | --- |
 | `models` | List of available models, each with `slug`, `display_name`, `description`, `default_reasoning_level`, and `supported_reasoning_levels` |
 | `default_model` | Model used by `codex_exec` when the request omits `model`; empty means the Codex CLI picks its own default |
+| `default_reasoning_effort` | Reasoning effort used by `codex_exec` when the request omits `reasoning_effort`; empty means the model's own default |
 
-Pass a model's `slug` as the `model` argument of `codex_exec`.
+Pass a model's `slug` as the `model` argument of `codex_exec`, and one of its
+`supported_reasoning_levels` as `reasoning_effort`.
 
 ## Architecture Overview
 

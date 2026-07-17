@@ -19,6 +19,10 @@ type Builder struct {
 	// DefaultModel is the model codex_exec falls back to when a request does
 	// not specify one. Empty means the Codex CLI's own default model.
 	DefaultModel string
+	// DefaultReasoningEffort is the reasoning effort codex_exec falls back to
+	// when a request does not specify one. Empty means the Codex CLI's own
+	// default for the selected model.
+	DefaultReasoningEffort string
 }
 
 type runner interface {
@@ -31,6 +35,7 @@ type CodexExecInput struct {
 	Cwd              string `json:"cwd,omitempty" jsonschema:"Working directory for the Codex run. Relative paths resolve from the server root."`
 	ThreadID         string `json:"thread_id,omitempty" jsonschema:"Existing Codex thread ID to resume."`
 	Model            string `json:"model,omitempty" jsonschema:"Codex model to run. Call the codex_list_models tool to discover the available models. If omitted, the server default model is used."`
+	ReasoningEffort  string `json:"reasoning_effort,omitempty" jsonschema:"Reasoning effort for the run, e.g. low, medium, high or xhigh. The codex_list_models tool reports which levels each model supports. If omitted, the server default is used."`
 	Profile          string `json:"profile,omitempty" jsonschema:"Optional Codex profile override."`
 	Sandbox          string `json:"sandbox,omitempty" jsonschema:"Sandbox mode used only when yolo is disabled in the server config. One of: read-only, workspace-write, danger-full-access."`
 	TimeoutMS        int    `json:"timeout_ms,omitempty" jsonschema:"Optional per-run timeout in milliseconds. The run is cancelled if the deadline is reached."`
@@ -44,6 +49,10 @@ type ListModelsResult struct {
 	// DefaultModel is the model codex_exec uses when the request does not
 	// specify one. Empty means the Codex CLI picks its own default.
 	DefaultModel string `json:"default_model,omitempty"`
+	// DefaultReasoningEffort is the reasoning effort codex_exec uses when the
+	// request does not specify one. Empty means the Codex CLI picks the
+	// model's own default.
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 }
 
 func (b Builder) New() *mcp.Server {
@@ -66,11 +75,23 @@ func (b Builder) New() *mcp.Server {
 		Name: "codex_exec",
 		Description: "Run Codex non-interactively and return the final assistant message plus execution metadata. " +
 			"Call codex_list_models first to discover the models available for the model argument.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Run Codex",
+			DestructiveHint: new(true),
+			OpenWorldHint:   new(true),
+		},
 	}, b.handleCodexExec)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "codex_list_models",
 		Description: "List the Codex models available on this server so you can choose one for the model argument of codex_exec.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "List Codex models",
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: new(false),
+			OpenWorldHint:   new(false),
+		},
 	}, b.handleListModels)
 
 	return srv
@@ -86,12 +107,18 @@ func (b Builder) handleCodexExec(ctx context.Context, _ *mcp.CallToolRequest, ar
 	if args.Sandbox != "" && args.Sandbox != "read-only" && args.Sandbox != "workspace-write" && args.Sandbox != "danger-full-access" {
 		return nil, codexcli.RunResult{}, fmt.Errorf("invalid sandbox value: %s", args.Sandbox)
 	}
+	for _, ch := range args.ReasoningEffort {
+		if ch < 'a' || ch > 'z' {
+			return nil, codexcli.RunResult{}, fmt.Errorf("invalid reasoning_effort value: %s", args.ReasoningEffort)
+		}
+	}
 
 	result, err := b.Runner.Run(ctx, codexcli.RunRequest{
 		Prompt:           args.Prompt,
 		Cwd:              args.Cwd,
 		ThreadID:         args.ThreadID,
 		Model:            args.Model,
+		ReasoningEffort:  args.ReasoningEffort,
 		Profile:          args.Profile,
 		Sandbox:          args.Sandbox,
 		TimeoutMS:        args.TimeoutMS,
@@ -109,8 +136,9 @@ func (b Builder) handleListModels(ctx context.Context, _ *mcp.CallToolRequest, _
 		return nil, ListModelsResult{}, err
 	}
 	return nil, ListModelsResult{
-		Models:       models,
-		DefaultModel: b.DefaultModel,
+		Models:                 models,
+		DefaultModel:           b.DefaultModel,
+		DefaultReasoningEffort: b.DefaultReasoningEffort,
 	}, nil
 }
 

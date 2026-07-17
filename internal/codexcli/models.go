@@ -40,8 +40,25 @@ const listModelsTimeout = 15 * time.Second
 
 // ListModels returns the models advertised by the local Codex CLI model
 // catalog (`codex debug models`), restricted to models with "list" visibility
-// and ordered by Codex's own priority.
+// and ordered by Codex's own priority. The catalog is baked into the Codex
+// binary, so the result is cached for the lifetime of the process.
 func (r *Runner) ListModels(ctx context.Context) ([]Model, error) {
+	r.modelsMu.Lock()
+	defer r.modelsMu.Unlock()
+
+	if r.modelsCache != nil {
+		return r.modelsCache, nil
+	}
+
+	models, err := r.fetchModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.modelsCache = models
+	return models, nil
+}
+
+func (r *Runner) fetchModels(ctx context.Context) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, listModelsTimeout)
 	defer cancel()
 

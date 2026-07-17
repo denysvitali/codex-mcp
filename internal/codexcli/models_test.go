@@ -2,6 +2,8 @@ package codexcli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -68,6 +70,45 @@ EOF
 		if m.Slug == "gpt-hidden" {
 			t.Fatalf("hidden model should have been filtered out: %+v", models)
 		}
+	}
+}
+
+func TestListModelsCachesCatalog(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	counter := filepath.Join(root, "calls.txt")
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+echo call >> "`+counter+`"
+cat <<'EOF'
+`+fakeCatalog+`
+EOF
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	first, err := runner.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	second, err := runner.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(first) != len(second) || first[0].Slug != second[0].Slug {
+		t.Fatalf("cached result mismatch: %+v vs %+v", first, second)
+	}
+
+	data, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	if calls := strings.Count(string(data), "call"); calls != 1 {
+		t.Fatalf("expected codex to be invoked once, got %d", calls)
 	}
 }
 

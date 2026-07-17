@@ -23,6 +23,7 @@ allow_dirs:
 default:
   yolo: false
   model: gpt-config
+  reasoning_effort: low
   sandbox: read-only
 max_concurrent_runs: 2
 log_level: debug
@@ -48,6 +49,7 @@ log_level: debug
 	cmd.Flags().StringVar(&cliCfg.ConfigPath, "config", cliCfg.ConfigPath, "")
 	cmd.Flags().BoolVar(&cliCfg.DefaultYolo, "default-yolo", cliCfg.DefaultYolo, "")
 	cmd.Flags().StringVar(&cliCfg.DefaultModel, "default-model", cliCfg.DefaultModel, "")
+	cmd.Flags().StringVar(&cliCfg.DefaultReasoningEffort, "default-reasoning-effort", cliCfg.DefaultReasoningEffort, "")
 	cmd.Flags().StringVar(&cliCfg.DefaultSandbox, "default-sandbox", cliCfg.DefaultSandbox, "")
 	cmd.Flags().IntVar(&cliCfg.MaxConcurrentRuns, "max-concurrent-runs", cliCfg.MaxConcurrentRuns, "")
 	cmd.Flags().StringVar(&cliCfg.LogLevel, "log-level", cliCfg.LogLevel, "")
@@ -56,6 +58,7 @@ log_level: debug
 		"--config", configPath,
 		"--codex-bin", "/usr/bin/from-cli",
 		"--default-model", "gpt-cli",
+		"--default-reasoning-effort", "high",
 		"--default-yolo=true",
 		"--allow-dir", "/tmp/cli-extra",
 	}
@@ -73,6 +76,9 @@ log_level: debug
 	}
 	if cfg.DefaultModel != "gpt-cli" {
 		t.Fatalf("expected default-model from CLI, got %q", cfg.DefaultModel)
+	}
+	if cfg.DefaultReasoningEffort != "high" {
+		t.Fatalf("expected default-reasoning-effort from CLI, got %q", cfg.DefaultReasoningEffort)
 	}
 	if !cfg.DefaultYolo {
 		t.Fatalf("expected default-yolo from CLI to override config file")

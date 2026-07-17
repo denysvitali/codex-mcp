@@ -54,6 +54,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&cliCfg.ConfigPath, "config", cliCfg.ConfigPath, "Path to config YAML file")
 	rootCmd.PersistentFlags().BoolVar(&cliCfg.DefaultYolo, "default-yolo", cliCfg.DefaultYolo, "Enable unrestricted Codex execution by default")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultModel, "default-model", cliCfg.DefaultModel, "Default Codex model to use when requests do not specify one (empty: use the Codex CLI's own default)")
+	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultReasoningEffort, "default-reasoning-effort", cliCfg.DefaultReasoningEffort, "Default reasoning effort when requests do not specify one (e.g. low, medium, high; empty: model's own default)")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultSandbox, "default-sandbox", cliCfg.DefaultSandbox, "Default sandbox to use when yolo is disabled")
 	rootCmd.PersistentFlags().IntVar(&cliCfg.MaxConcurrentRuns, "max-concurrent-runs", cliCfg.MaxConcurrentRuns, "Maximum concurrent Codex runs")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.LogLevel, "log-level", cliCfg.LogLevel, "Log level: panic, fatal, error, warn, info, debug, trace")
@@ -119,30 +120,33 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 			logger.SetLevel(level)
 
 			runner := codexcli.NewRunner(codexcli.RunnerConfig{
-				CodexBin:          cfg.CodexBin,
-				Root:              cfg.Root,
-				AllowDirs:         cfg.AllowDirs,
-				DefaultYolo:       cfg.DefaultYolo,
-				DefaultModel:      cfg.DefaultModel,
-				DefaultSandbox:    cfg.DefaultSandbox,
-				MaxConcurrentRuns: cfg.MaxConcurrentRuns,
+				CodexBin:               cfg.CodexBin,
+				Root:                   cfg.Root,
+				AllowDirs:              cfg.AllowDirs,
+				DefaultYolo:            cfg.DefaultYolo,
+				DefaultModel:           cfg.DefaultModel,
+				DefaultReasoningEffort: cfg.DefaultReasoningEffort,
+				DefaultSandbox:         cfg.DefaultSandbox,
+				MaxConcurrentRuns:      cfg.MaxConcurrentRuns,
 			}, logger)
 
 			srv := mcpserver.Builder{
-				Runner:       runner,
-				Logger:       logger,
-				Version:      version,
-				DefaultModel: cfg.DefaultModel,
+				Runner:                 runner,
+				Logger:                 logger,
+				Version:                version,
+				DefaultModel:           cfg.DefaultModel,
+				DefaultReasoningEffort: cfg.DefaultReasoningEffort,
 			}.New()
 
 			logger.WithFields(logrus.Fields{
-				"root":                cfg.Root,
-				"allow_dirs":          cfg.AllowDirs,
-				"default_yolo":        cfg.DefaultYolo,
-				"default_model":       cfg.DefaultModel,
-				"default_sandbox":     cfg.DefaultSandbox,
-				"max_concurrent_runs": cfg.MaxConcurrentRuns,
-				"config_path":         cfg.ConfigPath,
+				"root":                     cfg.Root,
+				"allow_dirs":               cfg.AllowDirs,
+				"default_yolo":             cfg.DefaultYolo,
+				"default_model":            cfg.DefaultModel,
+				"default_reasoning_effort": cfg.DefaultReasoningEffort,
+				"default_sandbox":          cfg.DefaultSandbox,
+				"max_concurrent_runs":      cfg.MaxConcurrentRuns,
+				"config_path":              cfg.ConfigPath,
 			}).Info("starting MCP stdio server")
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -187,6 +191,9 @@ func applyChangedFlags(cmd *cobra.Command, cfg *config.Config, cliCfg config.Con
 	}
 	if cmd.Flags().Changed("default-model") {
 		cfg.DefaultModel = cliCfg.DefaultModel
+	}
+	if cmd.Flags().Changed("default-reasoning-effort") {
+		cfg.DefaultReasoningEffort = cliCfg.DefaultReasoningEffort
 	}
 	if cmd.Flags().Changed("default-sandbox") {
 		cfg.DefaultSandbox = cliCfg.DefaultSandbox

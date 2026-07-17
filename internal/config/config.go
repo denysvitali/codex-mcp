@@ -19,15 +19,16 @@ const (
 )
 
 type Config struct {
-	CodexBin          string
-	Root              string
-	AllowDirs         []string
-	DefaultYolo       bool
-	DefaultModel      string
-	DefaultSandbox    string
-	MaxConcurrentRuns int
-	LogLevel          string
-	ConfigPath        string
+	CodexBin               string
+	Root                   string
+	AllowDirs              []string
+	DefaultYolo            bool
+	DefaultModel           string
+	DefaultReasoningEffort string
+	DefaultSandbox         string
+	MaxConcurrentRuns      int
+	LogLevel               string
+	ConfigPath             string
 }
 
 func (c Config) Validate() error {
@@ -60,9 +61,10 @@ type FileConfig struct {
 }
 
 type Defaults struct {
-	Yolo    *bool  `yaml:"yolo"`
-	Model   string `yaml:"model"`
-	Sandbox string `yaml:"sandbox"`
+	Yolo            *bool  `yaml:"yolo"`
+	Model           string `yaml:"model"`
+	ReasoningEffort string `yaml:"reasoning_effort"`
+	Sandbox         string `yaml:"sandbox"`
 }
 
 func DefaultConfigPath() (string, error) {
@@ -101,6 +103,9 @@ func (c *Config) ApplyFile(fileCfg FileConfig) {
 	}
 	if fileCfg.Default.Model != "" {
 		c.DefaultModel = fileCfg.Default.Model
+	}
+	if fileCfg.Default.ReasoningEffort != "" {
+		c.DefaultReasoningEffort = fileCfg.Default.ReasoningEffort
 	}
 	if fileCfg.Default.Sandbox != "" {
 		c.DefaultSandbox = fileCfg.Default.Sandbox

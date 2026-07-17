@@ -26,9 +26,10 @@ func TestApplyFile(t *testing.T) {
 		Root:      "/tmp/root",
 		AllowDirs: []string{"/tmp/extra"},
 		Default: Defaults{
-			Yolo:    &no,
-			Model:   "gpt-5.5",
-			Sandbox: "read-only",
+			Yolo:            &no,
+			Model:           "gpt-5.5",
+			ReasoningEffort: "high",
+			Sandbox:         "read-only",
 		},
 		MaxConcurrentRuns: 2,
 		LogLevel:          "debug",
@@ -40,7 +41,7 @@ func TestApplyFile(t *testing.T) {
 	if cfg.DefaultYolo {
 		t.Fatalf("expected default_yolo=false after file apply")
 	}
-	if cfg.DefaultModel != "gpt-5.5" || cfg.DefaultSandbox != "read-only" || cfg.MaxConcurrentRuns != 2 || cfg.LogLevel != "debug" {
+	if cfg.DefaultModel != "gpt-5.5" || cfg.DefaultReasoningEffort != "high" || cfg.DefaultSandbox != "read-only" || cfg.MaxConcurrentRuns != 2 || cfg.LogLevel != "debug" {
 		t.Fatalf("unexpected config after file apply: %+v", cfg)
 	}
 }

@@ -299,6 +299,123 @@ exit 0
 	}
 }
 
+func TestRunnerAppliesReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		defaultEffort  string
+		requestEffort  string
+		wantEffortArgs bool
+		wantEffort     string
+	}{
+		{name: "request effort", requestEffort: "high", wantEffortArgs: true, wantEffort: `model_reasoning_effort="high"`},
+		{name: "default effort", defaultEffort: "low", wantEffortArgs: true, wantEffort: `model_reasoning_effort="low"`},
+		{name: "request overrides default", defaultEffort: "low", requestEffort: "xhigh", wantEffortArgs: true, wantEffort: `model_reasoning_effort="xhigh"`},
+		{name: "no effort", wantEffortArgs: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			initGitRepo(t, root)
+			codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-effort"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+			runner := NewRunner(RunnerConfig{
+				CodexBin:               codexPath,
+				Root:                   root,
+				DefaultYolo:            true,
+				DefaultReasoningEffort: tt.defaultEffort,
+				MaxConcurrentRuns:      1,
+			}, testLogger())
+
+			_, err := runner.Run(context.Background(), RunRequest{
+				Prompt:          "continue",
+				ReasoningEffort: tt.requestEffort,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			args := string(argsData)
+			if tt.wantEffortArgs {
+				if !strings.Contains(args, "-c") || !strings.Contains(args, tt.wantEffort) {
+					t.Fatalf("expected args to contain -c %q, got %q", tt.wantEffort, args)
+				}
+			} else if strings.Contains(args, "model_reasoning_effort") {
+				t.Fatalf("expected no reasoning effort args, got %q", args)
+			}
+		})
+	}
+}
+
+func TestRunnerRejectsInvalidReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          "codex",
+		Root:              root,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	tests := []struct {
+		name   string
+		effort string
+	}{
+		{name: "toml injection", effort: `high"\nmodel="gpt-x`},
+		{name: "uppercase", effort: "HIGH"},
+		{name: "with space", effort: "very high"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := runner.Run(context.Background(), RunRequest{
+				Prompt:          "continue",
+				ReasoningEffort: tt.effort,
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "invalid reasoning_effort value") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunnerRejectsInvalidDefaultReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runner := NewRunner(RunnerConfig{
+		CodexBin:               "codex",
+		Root:                   root,
+		DefaultReasoningEffort: "high;rm",
+		MaxConcurrentRuns:      1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "continue"})
+	if err == nil || !strings.Contains(err.Error(), "invalid reasoning_effort value") {
+		t.Fatalf("expected invalid reasoning_effort error, got %v", err)
+	}
+}
+
 func TestRunnerRejectsSymlinkEscapingAllowedRoot(t *testing.T) {
 	t.Parallel()
 
