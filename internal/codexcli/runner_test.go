@@ -106,6 +106,44 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 	}
 }
 
+func TestRunnerDefaultsToFirstAllowedModel(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-321"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "",
+		AllowModels:       []string{"gpt-5.3-codex-spark"},
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	for _, want := range []string{"--model", "gpt-5.3-codex-spark"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("expected args to contain %q, got %q", want, args)
+		}
+	}
+}
+
 func TestRunnerConfigDisablesYoloAndAddsSandbox(t *testing.T) {
 	t.Parallel()
 

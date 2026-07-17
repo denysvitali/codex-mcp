@@ -325,6 +325,12 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) ([]s
 	if model == "" {
 		model = r.cfg.DefaultModel
 	}
+	if model == "" && len(r.cfg.AllowModels) > 0 {
+		// With an allow-list configured, the Codex CLI's own default model
+		// may not be permitted (or even exist for the account). Fall back
+		// to the first allowed model instead of passing no --model flag.
+		model = r.cfg.AllowModels[0]
+	}
 	if model != "" {
 		if err := r.checkModelAllowed(model); err != nil {
 			return nil, false, err
