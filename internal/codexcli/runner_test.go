@@ -58,7 +58,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input
 	}
 }
 
-func TestRunnerRunResumeAndAsync(t *testing.T) {
+func TestRunnerRunResume(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -79,16 +79,12 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 		MaxConcurrentRuns: 1,
 	}, testLogger())
 
-	result, err := runner.Run(context.Background(), RunRequest{
+	_, err := runner.Run(context.Background(), RunRequest{
 		Prompt:   "continue",
 		ThreadID: "session-1",
-		Async:    true,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if result.Mode != "task" {
-		t.Fatalf("unexpected mode: %q", result.Mode)
 	}
 
 	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
@@ -453,6 +449,113 @@ func TestParseJSONLMalformed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decode event 2") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunnerTurnFailedSurfacesReason(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-failed"}'
+printf '%s\n' '{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The bogus model is not supported.\"}}"}'
+printf '%s\n' '{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The bogus model is not supported.\"}}"}}'
+exit 0
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "hi"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "codex returned no final agent message") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "The bogus model is not supported.") {
+		t.Fatalf("expected unwrapped failure reason, got: %v", err)
+	}
+}
+
+func TestRunnerExitErrorIncludesTurnFailureMessage(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-exit"}'
+printf '%s\n' '{"type":"turn.failed","error":{"message":"usage limit reached"}}'
+exit 3
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "hi"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) {
+		t.Fatalf("expected RunError, got %T", err)
+	}
+	if runErr.Message != "usage limit reached" {
+		t.Fatalf("unexpected run error message: %+v", runErr)
+	}
+	if !strings.Contains(err.Error(), "usage limit reached") {
+		t.Fatalf("expected error text to include failure reason, got: %v", err)
+	}
+}
+
+func TestUnwrapCodexError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain message",
+			input: "usage limit reached",
+			want:  "usage limit reached",
+		},
+		{
+			name:  "nested api error",
+			input: `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model not supported"}}`,
+			want:  "model not supported",
+		},
+		{
+			name:  "top level message",
+			input: `{"type":"error","message":"stream disconnected"}`,
+			want:  "stream disconnected",
+		},
+		{
+			name:  "empty object",
+			input: `{}`,
+			want:  `{}`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := unwrapCodexError(tt.input); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
 

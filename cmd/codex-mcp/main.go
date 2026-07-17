@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
@@ -50,7 +53,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.PersistentFlags().StringSliceVar(&cliCfg.AllowDirs, "allow-dir", nil, "Additional allowed workspace directories")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.ConfigPath, "config", cliCfg.ConfigPath, "Path to config YAML file")
 	rootCmd.PersistentFlags().BoolVar(&cliCfg.DefaultYolo, "default-yolo", cliCfg.DefaultYolo, "Enable unrestricted Codex execution by default")
-	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultModel, "default-model", cliCfg.DefaultModel, "Default Codex model to use when requests do not specify one")
+	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultModel, "default-model", cliCfg.DefaultModel, "Default Codex model to use when requests do not specify one (empty: use the Codex CLI's own default)")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.DefaultSandbox, "default-sandbox", cliCfg.DefaultSandbox, "Default sandbox to use when yolo is disabled")
 	rootCmd.PersistentFlags().IntVar(&cliCfg.MaxConcurrentRuns, "max-concurrent-runs", cliCfg.MaxConcurrentRuns, "Maximum concurrent Codex runs")
 	rootCmd.PersistentFlags().StringVar(&cliCfg.LogLevel, "log-level", cliCfg.LogLevel, "Log level: panic, fatal, error, warn, info, debug, trace")
@@ -126,8 +129,10 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 			}, logger)
 
 			srv := mcpserver.Builder{
-				Runner: runner,
-				Logger: logger,
+				Runner:       runner,
+				Logger:       logger,
+				Version:      version,
+				DefaultModel: cfg.DefaultModel,
 			}.New()
 
 			logger.WithFields(logrus.Fields{
@@ -140,7 +145,9 @@ func newServeCommand(defaults config.Config, cliCfg *config.Config) *cobra.Comma
 				"config_path":         cfg.ConfigPath,
 			}).Info("starting MCP stdio server")
 
-			return server.ServeStdio(srv)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return srv.Run(ctx, &mcp.StdioTransport{})
 		},
 	}
 }

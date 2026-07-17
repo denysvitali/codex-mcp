@@ -13,7 +13,9 @@ import (
 const (
 	DefaultMaxConcurrentRuns = 4
 	DefaultLogLevel          = "info"
-	DefaultModel             = "gpt-5.4"
+	// DefaultModel is empty on purpose: when no model is configured, the
+	// Codex CLI's own default model is used instead of a hardcoded one.
+	DefaultModel = ""
 )
 
 type Config struct {

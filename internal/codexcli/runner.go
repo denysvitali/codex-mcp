@@ -43,7 +43,6 @@ type RunRequest struct {
 	Sandbox          string
 	TimeoutMS        int
 	SkipGitRepoCheck *bool
-	Async            bool
 }
 
 type RunResult struct {
@@ -52,7 +51,6 @@ type RunResult struct {
 	Usage         Usage  `json:"usage"`
 	ElapsedMS     int64  `json:"elapsed_ms"`
 	ExitCode      int    `json:"exit_code"`
-	Mode          string `json:"mode"`
 	RawEventCount int    `json:"raw_event_count"`
 	StderrTail    string `json:"stderr_tail,omitempty"`
 }
@@ -68,6 +66,7 @@ type parserState struct {
 	finalMessage string
 	usage        Usage
 	eventCount   int
+	errorMessage string
 }
 
 type eventEnvelope struct {
@@ -75,6 +74,12 @@ type eventEnvelope struct {
 	ThreadID string          `json:"thread_id"`
 	Item     json.RawMessage `json:"item"`
 	Usage    *usageEnvelope  `json:"usage"`
+	Message  string          `json:"message"`
+	Error    *errorEnvelope  `json:"error"`
+}
+
+type errorEnvelope struct {
+	Message string `json:"message"`
 }
 
 type usageEnvelope struct {
@@ -112,7 +117,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	r.logger.WithFields(logrus.Fields{
 		"cwd":       cwd,
 		"thread_id": req.ThreadID,
-		"async":     req.Async,
 	}).Info("starting codex run")
 
 	select {
@@ -192,17 +196,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, &RunError{
 			Err:        waitErr,
 			ExitCode:   exitCode,
+			Message:    state.errorMessage,
 			StderrTail: stderrTail,
 			ThreadID:   state.threadID,
 		}
 	}
 	if state.finalMessage == "" {
+		if state.errorMessage != "" {
+			return RunResult{}, fmt.Errorf("codex returned no final agent message: %s", state.errorMessage)
+		}
 		return RunResult{}, fmt.Errorf("codex returned no final agent message")
-	}
-
-	mode := "sync"
-	if req.Async {
-		mode = "task"
 	}
 
 	r.logger.WithFields(logrus.Fields{
@@ -211,7 +214,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"elapsed_ms": elapsedMS,
 		"exit_code":  exitCode,
 		"raw_events": state.eventCount,
-		"mode":       mode,
 		"yolo":       yolo,
 	}).Info("codex run completed")
 
@@ -221,7 +223,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Usage:         state.usage,
 		ElapsedMS:     elapsedMS,
 		ExitCode:      exitCode,
-		Mode:          mode,
 		RawEventCount: state.eventCount,
 		StderrTail:    "",
 	}, nil
@@ -243,15 +244,22 @@ func (e *TimeoutError) Error() string {
 type RunError struct {
 	Err        error
 	ExitCode   int
+	// Message is the failure reason reported by Codex in the JSONL event
+	// stream, e.g. when a turn fails without a non-zero exit code.
+	Message    string
 	StderrTail string
 	ThreadID   string
 }
 
 func (e *RunError) Error() string {
-	if e.StderrTail == "" {
-		return fmt.Sprintf("codex exited with code %d: %v", e.ExitCode, e.Err)
+	base := fmt.Sprintf("codex exited with code %d: %v", e.ExitCode, e.Err)
+	if e.Message != "" {
+		base += ": " + e.Message
 	}
-	return fmt.Sprintf("codex exited with code %d: %v: %s", e.ExitCode, e.Err, e.StderrTail)
+	if e.StderrTail != "" {
+		base += ": " + e.StderrTail
+	}
+	return base
 }
 
 func (e *RunError) Unwrap() error {
@@ -405,6 +413,14 @@ func parseJSONL(reader io.Reader) (parserState, error) {
 			if item.Type == "agent_message" && item.Text != "" {
 				state.finalMessage = item.Text
 			}
+		case "error":
+			if event.Message != "" {
+				state.errorMessage = unwrapCodexError(event.Message)
+			}
+		case "turn.failed":
+			if event.Error != nil && event.Error.Message != "" {
+				state.errorMessage = unwrapCodexError(event.Error.Message)
+			}
 		case "turn.completed":
 			if event.Usage != nil {
 				state.usage = Usage{
@@ -420,6 +436,32 @@ func parseJSONL(reader io.Reader) (parserState, error) {
 		return parserState{}, err
 	}
 	return state, nil
+}
+
+// unwrapCodexError extracts the innermost reason from Codex's nested
+// JSON-encoded error strings, e.g.
+// {"type":"error","error":{"message":"model not supported"}}.
+func unwrapCodexError(message string) string {
+	for range 3 {
+		var payload struct {
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(message), &payload); err != nil {
+			return message
+		}
+		switch {
+		case payload.Error.Message != "":
+			message = payload.Error.Message
+		case payload.Message != "" && payload.Message != message:
+			message = payload.Message
+		default:
+			return message
+		}
+	}
+	return message
 }
 
 func readTail(reader io.Reader, limit int) string {

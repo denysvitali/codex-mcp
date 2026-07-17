@@ -3,24 +3,14 @@ package mcpserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 
 	"github.com/denysvitali/codex-mcp/internal/codexcli"
 )
-
-func TestCodexExecInputSchemaCompiles(t *testing.T) {
-	t.Parallel()
-
-	var input CodexExecInput
-	if input.Prompt != "" {
-		t.Fatal("zero value mismatch")
-	}
-}
 
 func TestHandleCodexExecValidation(t *testing.T) {
 	t.Parallel()
@@ -70,7 +60,7 @@ func TestHandleCodexExecValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := builder.handleCodexExec(context.Background(), mcp.CallToolRequest{}, tt.args)
+			_, _, err := builder.handleCodexExec(context.Background(), nil, tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -81,7 +71,7 @@ func TestHandleCodexExecValidation(t *testing.T) {
 	}
 }
 
-func TestHandleCodexExecPassesAsyncFlag(t *testing.T) {
+func TestHandleCodexExecForwardsRequest(t *testing.T) {
 	t.Parallel()
 
 	runner := &capturingRunner{
@@ -92,13 +82,8 @@ func TestHandleCodexExecPassesAsyncFlag(t *testing.T) {
 		Logger: logrus.New(),
 	}
 
-	req := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Task: &mcp.TaskParams{},
-		},
-	}
 	skip := true
-	result, err := builder.handleCodexExec(context.Background(), req, CodexExecInput{
+	_, result, err := builder.handleCodexExec(context.Background(), nil, CodexExecInput{
 		Prompt:           "ship it",
 		Cwd:              "repo",
 		ThreadID:         "thread-1",
@@ -115,14 +100,12 @@ func TestHandleCodexExecPassesAsyncFlag(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 
-	if runner.req.Prompt != "ship it" || runner.req.Cwd != "repo" || runner.req.ThreadID != "thread-1" {
-		t.Fatalf("unexpected request forwarded to runner: %+v", runner.req)
+	req := runner.req
+	if req.Prompt != "ship it" || req.Cwd != "repo" || req.ThreadID != "thread-1" || req.Model != "gpt-test" || req.Profile != "fast" || req.Sandbox != "read-only" || req.TimeoutMS != 123 {
+		t.Fatalf("unexpected request forwarded to runner: %+v", req)
 	}
-	if !runner.req.Async {
-		t.Fatalf("expected async request: %+v", runner.req)
-	}
-	if runner.req.SkipGitRepoCheck == nil || !*runner.req.SkipGitRepoCheck {
-		t.Fatalf("expected skip_git_repo_check to be forwarded: %+v", runner.req)
+	if req.SkipGitRepoCheck == nil || !*req.SkipGitRepoCheck {
+		t.Fatalf("expected skip_git_repo_check to be forwarded: %+v", req)
 	}
 }
 
@@ -152,7 +135,7 @@ func TestHandleCodexExecAcceptsValidSandboxValues(t *testing.T) {
 				Logger: logrus.New(),
 			}
 
-			_, err := builder.handleCodexExec(context.Background(), mcp.CallToolRequest{}, CodexExecInput{
+			_, _, err := builder.handleCodexExec(context.Background(), nil, CodexExecInput{
 				Prompt:  "run",
 				Sandbox: tt.sandbox,
 			})
@@ -166,7 +149,7 @@ func TestHandleCodexExecAcceptsValidSandboxValues(t *testing.T) {
 	}
 }
 
-func TestHandleCodexExecWrapsRunErrorWithStderrTail(t *testing.T) {
+func TestHandleCodexExecReturnsRunError(t *testing.T) {
 	t.Parallel()
 
 	inner := &codexcli.RunError{
@@ -180,7 +163,7 @@ func TestHandleCodexExecWrapsRunErrorWithStderrTail(t *testing.T) {
 		Logger: logrus.New(),
 	}
 
-	_, err := builder.handleCodexExec(context.Background(), mcp.CallToolRequest{}, CodexExecInput{Prompt: "run"})
+	_, _, err := builder.handleCodexExec(context.Background(), nil, CodexExecInput{Prompt: "run"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -188,78 +171,145 @@ func TestHandleCodexExecWrapsRunErrorWithStderrTail(t *testing.T) {
 		t.Fatalf("expected wrapped RunError, got %T", err)
 	}
 	if !strings.Contains(err.Error(), "stderr tail") {
-		t.Fatalf("expected wrapped error message to include stderr tail, got %q", err.Error())
+		t.Fatalf("expected error message to include stderr tail, got %q", err.Error())
 	}
 }
 
-func TestHandleCodexExecWrapsNestedRunErrorWithStderrTail(t *testing.T) {
+func TestHandleListModels(t *testing.T) {
 	t.Parallel()
 
-	inner := &codexcli.RunError{
-		Err:        errors.New("boom"),
-		ExitCode:   17,
-		StderrTail: "stderr tail",
-		ThreadID:   "thread-err",
+	models := []codexcli.Model{
+		{Slug: "gpt-a", DisplayName: "GPT A"},
+		{Slug: "gpt-b", DisplayName: "GPT B", DefaultReasoningLevel: "medium"},
 	}
 	builder := Builder{
-		Runner: stubRunner{err: fmt.Errorf("runner failed: %w", inner)},
+		Runner:       stubRunner{models: models},
+		Logger:       logrus.New(),
+		DefaultModel: "gpt-a",
+	}
+
+	_, result, err := builder.handleListModels(context.Background(), nil, ListModelsInput{})
+	if err != nil {
+		t.Fatalf("handleListModels() error = %v", err)
+	}
+	if len(result.Models) != 2 || result.Models[0].Slug != "gpt-a" || result.Models[1].Slug != "gpt-b" {
+		t.Fatalf("unexpected models: %+v", result.Models)
+	}
+	if result.DefaultModel != "gpt-a" {
+		t.Fatalf("unexpected default model: %q", result.DefaultModel)
+	}
+}
+
+func TestHandleListModelsPropagatesError(t *testing.T) {
+	t.Parallel()
+
+	builder := Builder{
+		Runner: stubRunner{err: errors.New("catalog unavailable")},
 		Logger: logrus.New(),
 	}
 
-	_, err := builder.handleCodexExec(context.Background(), mcp.CallToolRequest{}, CodexExecInput{Prompt: "run"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-
-	var runErr *codexcli.RunError
-	if !errors.As(err, &runErr) {
-		t.Fatalf("expected wrapped RunError, got %T", err)
-	}
-	if runErr != inner {
-		t.Fatalf("expected original RunError pointer, got %#v", runErr)
-	}
-	if !strings.Contains(err.Error(), "stderr tail") {
-		t.Fatalf("expected wrapped error message to include stderr tail, got %q", err.Error())
+	_, _, err := builder.handleListModels(context.Background(), nil, ListModelsInput{})
+	if err == nil || !strings.Contains(err.Error(), "catalog unavailable") {
+		t.Fatalf("expected catalog error, got %v", err)
 	}
 }
 
-func TestHandleCodexExecReturnsPlainErrorWithoutStderrTail(t *testing.T) {
+// TestServerEndToEnd exercises the full MCP protocol stack over the official
+// SDK's in-memory transport: initialize, list tools, and call both tools.
+func TestServerEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	inner := &codexcli.RunError{
-		Err:      errors.New("boom"),
-		ExitCode: 17,
+	runner := &capturingRunner{
+		result: codexcli.RunResult{FinalMessage: "pong", ThreadID: "thread-1"},
+		models: []codexcli.Model{{Slug: "gpt-a", DisplayName: "GPT A"}},
 	}
-	builder := Builder{
-		Runner: stubRunner{err: inner},
-		Logger: logrus.New(),
+	srv := Builder{
+		Runner:       runner,
+		Logger:       logrus.New(),
+		Version:      "test",
+		DefaultModel: "gpt-a",
+	}.New()
+
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect() error = %v", err)
 	}
 
-	_, err := builder.handleCodexExec(context.Background(), mcp.CallToolRequest{}, CodexExecInput{Prompt: "run"})
-	if err == nil {
-		t.Fatal("expected error")
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect() error = %v", err)
 	}
-	if !errors.As(err, &inner) {
-		t.Fatalf("expected RunError, got %T", err)
+	defer func() { _ = session.Close() }()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools() error = %v", err)
 	}
-}
-
-func TestAsRunErrorFindsWrappedRunError(t *testing.T) {
-	t.Parallel()
-
-	inner := &codexcli.RunError{Err: errors.New("boom"), ExitCode: 42}
-	var target *codexcli.RunError
-
-	if !AsRunError(fmt.Errorf("outer: %w", inner), &target) {
-		t.Fatal("expected AsRunError to match wrapped RunError")
+	names := make(map[string]bool, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names[tool.Name] = true
 	}
-	if target != inner {
-		t.Fatalf("expected original RunError pointer, got %#v", target)
+	if !names["codex_exec"] || !names["codex_list_models"] {
+		t.Fatalf("expected both tools to be registered, got %v", names)
+	}
+
+	execResult, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "codex_exec",
+		Arguments: map[string]any{"prompt": "say pong", "model": "gpt-a"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(codex_exec) error = %v", err)
+	}
+	if execResult.IsError {
+		t.Fatalf("codex_exec returned tool error: %+v", execResult.Content)
+	}
+	structured, ok := execResult.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured content, got %T", execResult.StructuredContent)
+	}
+	if structured["final_message"] != "pong" || structured["thread_id"] != "thread-1" {
+		t.Fatalf("unexpected structured content: %+v", structured)
+	}
+	if runner.req.Model != "gpt-a" {
+		t.Fatalf("expected model to be forwarded, got %+v", runner.req)
+	}
+
+	modelsResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "codex_list_models"})
+	if err != nil {
+		t.Fatalf("CallTool(codex_list_models) error = %v", err)
+	}
+	if modelsResult.IsError {
+		t.Fatalf("codex_list_models returned tool error: %+v", modelsResult.Content)
+	}
+	structured, ok = modelsResult.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured content, got %T", modelsResult.StructuredContent)
+	}
+	if structured["default_model"] != "gpt-a" {
+		t.Fatalf("unexpected default model: %+v", structured)
+	}
+	models, ok := structured["models"].([]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("unexpected models payload: %+v", structured)
+	}
+
+	toolError, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "codex_exec",
+		Arguments: map[string]any{"prompt": ""},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(invalid) error = %v", err)
+	}
+	if !toolError.IsError {
+		t.Fatalf("expected validation error to surface as tool error: %+v", toolError)
 	}
 }
 
 type stubRunner struct {
 	result codexcli.RunResult
+	models []codexcli.Model
 	err    error
 }
 
@@ -267,12 +317,21 @@ func (r stubRunner) Run(context.Context, codexcli.RunRequest) (codexcli.RunResul
 	return r.result, r.err
 }
 
+func (r stubRunner) ListModels(context.Context) ([]codexcli.Model, error) {
+	return r.models, r.err
+}
+
 type capturingRunner struct {
 	req    codexcli.RunRequest
 	result codexcli.RunResult
+	models []codexcli.Model
 }
 
 func (r *capturingRunner) Run(_ context.Context, req codexcli.RunRequest) (codexcli.RunResult, error) {
 	r.req = req
 	return r.result, nil
+}
+
+func (r *capturingRunner) ListModels(context.Context) ([]codexcli.Model, error) {
+	return r.models, nil
 }

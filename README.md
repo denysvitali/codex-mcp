@@ -2,14 +2,15 @@
 
 `codex-mcp` is a Go-based MCP stdio server that wraps OpenAI's Codex CLI and exposes `codex exec` as a structured MCP tool named `codex_exec`.
 
-It is intended for agentic workflows where an MCP client such as Claude Code needs to delegate a self-contained coding task to Codex, receive the final assistant message, and capture execution metadata in a predictable schema.
+It is built on the [official Model Context Protocol Go SDK](https://github.com/modelcontextprotocol/go-sdk) and is intended for agentic workflows where an MCP client such as Claude Code needs to delegate a self-contained coding task to Codex, receive the final assistant message, and capture execution metadata in a predictable schema.
 
 ## Features
 
-- Exposes a single structured MCP tool: `codex_exec`
+- Exposes two structured MCP tools: `codex_exec` and `codex_list_models`
+- Lets the calling model choose the Codex model per run, with live discovery via `codex_list_models` (backed by `codex debug models`)
 - Runs over stdio, making it easy to plug into local MCP clients
 - Wraps Codex non-interactive execution with JSONL event parsing
-- Supports both synchronous calls and MCP task-based execution
+- Surfaces Codex failure reasons (e.g. unsupported model, usage limits) extracted from `error` / `turn.failed` events
 - Supports resuming existing Codex threads with `thread_id`
 - Enforces an allowed workspace root plus optional additional allowed directories
 - Normalizes paths and resolves symlinks before execution
@@ -54,7 +55,7 @@ allow_dirs:
 
 default:
   yolo: true
-  model: gpt-5.4
+  model: gpt-5.4-mini
   sandbox: workspace-write
 
 max_concurrent_runs: 4
@@ -69,7 +70,7 @@ log_level: info
 | `root` | string | Primary allowed workspace root. If omitted, the server falls back to the current working directory at startup. |
 | `allow_dirs` | list of strings | Additional allowed directories for `cwd` resolution. |
 | `default.yolo` | bool | Whether to run Codex in unrestricted mode by default. Defaults to `true`. |
-| `default.model` | string | Default model passed to Codex when a request does not specify one. Defaults to `gpt-5.4`. |
+| `default.model` | string | Default model passed to Codex when a request does not specify one. Defaults to empty, which lets the Codex CLI pick its own default model. |
 | `default.sandbox` | string | Sandbox used when `default.yolo` is `false`. Valid values: `read-only`, `workspace-write`, `danger-full-access`. |
 | `max_concurrent_runs` | integer | Maximum number of Codex processes allowed at once. Defaults to `4`. |
 | `log_level` | string | Logrus level. Valid values include `error`, `warn`, `info`, `debug`, `trace`. Defaults to `info`. |
@@ -85,7 +86,7 @@ codex-mcp serve \
   --codex-bin /usr/local/bin/codex \
   --default-yolo=false \
   --default-sandbox workspace-write \
-  --default-model gpt-5.4 \
+  --default-model gpt-5.4-mini \
   --max-concurrent-runs 2 \
   --log-level info
 ```
@@ -99,7 +100,7 @@ Available flags:
 | `--allow-dir` | Additional allowed directory; repeatable |
 | `--config` | Path to a YAML config file |
 | `--default-yolo` | Enable unrestricted Codex execution by default |
-| `--default-model` | Default model when requests omit `model` |
+| `--default-model` | Default model when requests omit `model` (empty: Codex CLI's own default) |
 | `--default-sandbox` | Default sandbox when yolo is disabled |
 | `--max-concurrent-runs` | Maximum concurrent Codex runs |
 | `--log-level` | Logging verbosity |
@@ -141,9 +142,12 @@ If `codex-mcp` or `codex` are not in `PATH`, use absolute paths in the command a
 
 ### MCP tool contract
 
-The server exposes one tool:
+The server exposes two tools:
 
 - `codex_exec`
+- `codex_list_models`
+
+#### `codex_exec`
 
 Input fields:
 
@@ -152,7 +156,7 @@ Input fields:
 | `prompt` | Yes | Instructions sent to Codex |
 | `cwd` | No | Working directory for the run; relative paths resolve from the server root |
 | `thread_id` | No | Existing Codex thread ID to resume |
-| `model` | No | Per-request model override |
+| `model` | No | Codex model to run. Call `codex_list_models` to discover the available models. Defaults to the server default model |
 | `profile` | No | Per-request Codex profile override |
 | `sandbox` | No | Per-request sandbox override, used only when yolo is disabled in server config |
 | `timeout_ms` | No | Per-request timeout in milliseconds |
@@ -167,9 +171,28 @@ Output fields:
 | `usage` | Token usage summary |
 | `elapsed_ms` | End-to-end execution time |
 | `exit_code` | Process exit code |
-| `mode` | `sync` or `task` |
 | `raw_event_count` | Number of JSONL events parsed from Codex output |
 | `stderr_tail` | Present on some error paths to help diagnose failures |
+
+When a Codex run fails, the tool error includes the failure reason Codex
+reported in its event stream (for example an unsupported model or a usage
+limit), so the calling model can react — for instance by picking a different
+model and retrying.
+
+#### `codex_list_models`
+
+Takes no arguments. Returns the models advertised by the local Codex CLI model
+catalog (`codex debug models`), ordered by Codex's own priority, plus the
+server's effective default model.
+
+Output fields:
+
+| Field | Description |
+| --- | --- |
+| `models` | List of available models, each with `slug`, `display_name`, `description`, `default_reasoning_level`, and `supported_reasoning_levels` |
+| `default_model` | Model used by `codex_exec` when the request omits `model`; empty means the Codex CLI picks its own default |
+
+Pass a model's `slug` as the `model` argument of `codex_exec`.
 
 ## Architecture Overview
 
@@ -177,8 +200,9 @@ The codebase is intentionally small and split into a few focused packages:
 
 - [`cmd/codex-mcp/main.go`](/home/workspace/git/codex-mcp/cmd/codex-mcp/main.go) defines the Cobra CLI, loads config, validates runtime settings, and starts the stdio MCP server.
 - [`internal/config/config.go`](/home/workspace/git/codex-mcp/internal/config/config.go) handles YAML loading, defaults, path normalization, and config validation.
-- [`internal/mcpserver/server.go`](/home/workspace/git/codex-mcp/internal/mcpserver/server.go) defines the MCP server, registers `codex_exec`, validates tool input, and maps MCP calls to runner requests.
+- [`internal/mcpserver/server.go`](/home/workspace/git/codex-mcp/internal/mcpserver/server.go) defines the MCP server on the official [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk), registers `codex_exec` and `codex_list_models`, validates tool input, and maps MCP calls to runner requests.
 - [`internal/codexcli/runner.go`](/home/workspace/git/codex-mcp/internal/codexcli/runner.go) builds the `codex exec` command, enforces directory restrictions, manages timeouts and concurrency, parses JSONL output, and returns structured results.
+- [`internal/codexcli/models.go`](/home/workspace/git/codex-mcp/internal/codexcli/models.go) discovers the available Codex models by parsing the `codex debug models` catalog.
 - [`internal/codexcli/git.go`](/home/workspace/git/codex-mcp/internal/codexcli/git.go) performs Git repository detection used for `--skip-git-repo-check`.
 
 At runtime the flow is:
@@ -208,4 +232,5 @@ This repository does not currently include a `LICENSE` file. As a result, the li
 
 ## References
 
+- Official Model Context Protocol Go SDK: https://github.com/modelcontextprotocol/go-sdk
 - Anthropic Claude Code MCP documentation: https://docs.anthropic.com/en/docs/claude-code/mcp
