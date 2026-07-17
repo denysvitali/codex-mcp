@@ -194,9 +194,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}()
 
 	state, parseErr := parseJSONL(stdout)
+	// Drain stderr before Wait: Wait closes the pipe once the process
+	// exits, so a read racing with Wait can fail and lose buffered output.
+	stderrTail := <-stderrCh
 	waitErr := cmd.Wait()
 	elapsedMS := time.Since(start).Milliseconds()
-	stderrTail := <-stderrCh
 	exitCode := exitCodeFromError(waitErr)
 
 	if runCtx.Err() != nil {
