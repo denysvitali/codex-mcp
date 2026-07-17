@@ -50,6 +50,8 @@ type RunRequest struct {
 	Profile          string
 	Sandbox          string
 	OutputSchema     map[string]any
+	AddDirs          []string
+	Ephemeral        bool
 	TimeoutMS        int
 	SkipGitRepoCheck *bool
 }
@@ -129,6 +131,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
+	root, err := evalDir(r.cfg.Root)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("resolve root: %w", err)
+	}
+
 	cwd, err := r.resolveCwd(req.Cwd)
 	if err != nil {
 		return RunResult{}, err
@@ -146,16 +153,28 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	defer func() { <-r.semaphore }()
 
-	args, yolo, outputSchemaPath, err := r.buildArgs(ctx, cwd, req)
+	addDirs, err := r.resolveAddDirs(req.AddDirs, root)
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	args, yolo, outputSchemaPath, finalMessagePath, err := r.buildArgs(ctx, cwd, req, addDirs)
 	if err != nil {
 		return RunResult{}, err
 	}
 	defer func() {
-		if outputSchemaPath == "" {
+		if outputSchemaPath == "" && finalMessagePath == "" {
 			return
 		}
-		if err := os.Remove(outputSchemaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			r.logger.WithError(err).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file")
+		if outputSchemaPath != "" {
+			if err := os.Remove(outputSchemaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				r.logger.WithError(err).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file")
+			}
+		}
+		if finalMessagePath != "" {
+			if err := os.Remove(finalMessagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				r.logger.WithError(err).WithField("final_message_file", finalMessagePath).Warn("failed to remove temporary final message file")
+			}
 		}
 	}()
 
@@ -214,7 +233,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	if parseErr != nil {
-		return RunResult{}, fmt.Errorf("parse codex output: %w", parseErr)
+		details := fmt.Sprintf("events=%d, exit_code=%d", state.eventCount, exitCode)
+		if state.threadID != "" {
+			details += fmt.Sprintf(", thread_id=%s", state.threadID)
+		}
+		if stderrTail != "" {
+			details += fmt.Sprintf(", stderr_tail=%s", stderrTail)
+		}
+		return RunResult{}, fmt.Errorf("parse codex output (%s): %w", details, parseErr)
 	}
 	if waitErr != nil {
 		r.logger.WithFields(logrus.Fields{
@@ -229,13 +255,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			Message:    state.errorMessage,
 			StderrTail: stderrTail,
 			ThreadID:   state.threadID,
+			Kind:       classifyRunError(state.errorMessage, stderrTail),
 		}
 	}
 	if state.finalMessage == "" {
-		if state.errorMessage != "" {
-			return RunResult{}, fmt.Errorf("codex returned no final agent message: %s", state.errorMessage)
+		if finalMessage, err := os.ReadFile(finalMessagePath); err == nil {
+			state.finalMessage = strings.TrimSpace(string(finalMessage))
 		}
-		return RunResult{}, fmt.Errorf("codex returned no final agent message")
+		if state.finalMessage == "" {
+			if state.errorMessage != "" {
+				return RunResult{}, fmt.Errorf("codex returned no final agent message: %s", state.errorMessage)
+			}
+			return RunResult{}, fmt.Errorf("codex returned no final agent message")
+		}
 	}
 
 	r.logger.WithFields(logrus.Fields{
@@ -279,15 +311,23 @@ type RunError struct {
 	Message    string
 	StderrTail string
 	ThreadID   string
+	Kind       string
 }
 
 func (e *RunError) Error() string {
-	base := fmt.Sprintf("codex exited with code %d: %v", e.ExitCode, e.Err)
+	base := fmt.Sprintf("codex exited with code %d", e.ExitCode)
+	if e.Kind != "" {
+		base += fmt.Sprintf(" (kind=%s)", e.Kind)
+	}
+	base += fmt.Sprintf(": %v", e.Err)
 	if e.Message != "" {
 		base += ": " + e.Message
 	}
 	if e.StderrTail != "" {
 		base += ": " + e.StderrTail
+	}
+	if e.ThreadID != "" {
+		base += fmt.Sprintf(" [thread_id=%s]", e.ThreadID)
 	}
 	return base
 }
@@ -324,43 +364,71 @@ func (r *Runner) checkModelAllowed(model string) error {
 	return fmt.Errorf("model %q is not allowed; allowed models: %s", model, strings.Join(r.cfg.AllowModels, ", "))
 }
 
-func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) (args []string, yolo bool, outputSchemaPath string, err error) {
+func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest, addDirs []string) (args []string, yolo bool, outputSchemaPath string, finalMessagePath string, err error) {
 	yolo = r.cfg.DefaultYolo
 	args = []string{"exec"}
 	outputSchemaPath = ""
+	finalMessagePath = ""
 	defer func() {
-		if err == nil || outputSchemaPath == "" {
+		if err == nil {
 			return
 		}
-		if removeErr := os.Remove(outputSchemaPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			r.logger.WithError(removeErr).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file after buildArgs error")
+		if outputSchemaPath != "" {
+			if removeErr := os.Remove(outputSchemaPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				r.logger.WithError(removeErr).WithField("output_schema_file", outputSchemaPath).Warn("failed to remove temporary output schema file after buildArgs error")
+			}
+		}
+		if finalMessagePath != "" {
+			if removeErr := os.Remove(finalMessagePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				r.logger.WithError(removeErr).WithField("final_message_file", finalMessagePath).Warn("failed to remove temporary final message file after buildArgs error")
+			}
 		}
 	}()
+
+	outputMessageFile, err := os.CreateTemp("", "codex-last-message-*.txt")
+	if err != nil {
+		return nil, false, "", "", fmt.Errorf("create temporary final message file: %w", err)
+	}
+	if err := outputMessageFile.Close(); err != nil {
+		_ = os.Remove(outputMessageFile.Name())
+		return nil, false, "", "", fmt.Errorf("close temporary final message file: %w", err)
+	}
+	finalMessagePath = outputMessageFile.Name()
+	args = append(args, "-o", finalMessagePath)
+
 	if req.OutputSchema != nil {
 		path, err := os.CreateTemp("", "codex-output-schema-*.json")
 		if err != nil {
-			return nil, false, "", fmt.Errorf("create temporary output schema file: %w", err)
+			return nil, false, "", "", fmt.Errorf("create temporary output schema file: %w", err)
 		}
 
 		payload, err := json.Marshal(req.OutputSchema)
 		if err != nil {
 			_ = os.Remove(path.Name())
 			_ = path.Close()
-			return nil, false, "", fmt.Errorf("marshal output_schema: %w", err)
+			return nil, false, "", "", fmt.Errorf("marshal output_schema: %w", err)
 		}
 
 		if _, err := path.Write(payload); err != nil {
 			_ = path.Close()
 			_ = os.Remove(path.Name())
-			return nil, false, "", fmt.Errorf("write output schema file: %w", err)
+			return nil, false, "", "", fmt.Errorf("write output schema file: %w", err)
 		}
 		if err := path.Close(); err != nil {
 			_ = os.Remove(path.Name())
-			return nil, false, "", fmt.Errorf("close output schema file: %w", err)
+			return nil, false, "", "", fmt.Errorf("close output schema file: %w", err)
 		}
 
 		outputSchemaPath = path.Name()
 		args = append(args, "--output-schema", outputSchemaPath)
+	}
+
+	for _, dir := range addDirs {
+		args = append(args, "--add-dir", dir)
+	}
+
+	if req.Ephemeral {
+		args = append(args, "--ephemeral")
 	}
 
 	if req.ThreadID != "" {
@@ -380,7 +448,7 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) (arg
 	}
 	if model != "" {
 		if err := r.checkModelAllowed(model); err != nil {
-			return nil, false, outputSchemaPath, err
+			return nil, false, outputSchemaPath, finalMessagePath, err
 		}
 		args = append(args, "--model", model)
 	}
@@ -389,7 +457,7 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) (arg
 		effort = r.cfg.DefaultReasoningEffort
 	}
 	if err := validateReasoningEffort(effort); err != nil {
-		return nil, false, outputSchemaPath, err
+		return nil, false, outputSchemaPath, finalMessagePath, err
 	}
 	if effort != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
@@ -412,14 +480,14 @@ func (r *Runner) buildArgs(ctx context.Context, cwd string, req RunRequest) (arg
 
 	skipGitRepoCheck, err := r.resolveSkipGitRepoCheck(ctx, cwd, req.SkipGitRepoCheck)
 	if err != nil {
-		return nil, false, outputSchemaPath, err
+		return nil, false, outputSchemaPath, finalMessagePath, err
 	}
 	if skipGitRepoCheck {
 		args = append(args, "--skip-git-repo-check")
 	}
 
 	args = append(args, req.Prompt)
-	return args, yolo, outputSchemaPath, nil
+	return args, yolo, outputSchemaPath, finalMessagePath, nil
 }
 
 func (r *Runner) resolveCwd(requested string) (string, error) {
@@ -467,6 +535,39 @@ func (r *Runner) resolveCwd(requested string) (string, error) {
 	return cwd, nil
 }
 
+func (r *Runner) resolveAddDirs(requested []string, root string) ([]string, error) {
+	allowDirs := make([]string, 0, len(r.cfg.AllowDirs))
+	for _, dir := range r.cfg.AllowDirs {
+		resolved, err := evalDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve allowed dir %q: %w", dir, err)
+		}
+		allowDirs = append(allowDirs, resolved)
+	}
+
+	resolved := make([]string, 0, len(requested))
+	for _, dir := range requested {
+		candidate := dir
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, candidate)
+		}
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve add_dir %q: %w", dir, err)
+		}
+		evaluated, err := evalDir(abs)
+		if err != nil {
+			return nil, fmt.Errorf("resolve add_dir %q: %w", dir, err)
+		}
+		if !isAllowedPath(evaluated, root, allowDirs) {
+			return nil, fmt.Errorf("add_dir %q is outside the allowed roots", evaluated)
+		}
+		resolved = append(resolved, evaluated)
+	}
+
+	return resolved, nil
+}
+
 func evalDir(path string) (string, error) {
 	clean := filepath.Clean(path)
 	resolved, err := filepath.EvalSymlinks(clean)
@@ -494,7 +595,7 @@ func (r *Runner) resolveSkipGitRepoCheck(ctx context.Context, cwd string, reques
 func parseJSONL(reader io.Reader) (parserState, error) {
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner.Buffer(buf, 64*1024*1024)
 
 	var state parserState
 	for scanner.Scan() {
@@ -506,7 +607,7 @@ func parseJSONL(reader io.Reader) (parserState, error) {
 		state.eventCount++
 		var event eventEnvelope
 		if err := json.Unmarshal(line, &event); err != nil {
-			return parserState{}, fmt.Errorf("decode event %d: %w", state.eventCount, err)
+			return state, fmt.Errorf("decode event %d: %w", state.eventCount, err)
 		}
 
 		switch event.Type {
@@ -520,7 +621,7 @@ func parseJSONL(reader io.Reader) (parserState, error) {
 				continue
 			}
 			if err := json.Unmarshal(event.Item, &item); err != nil {
-				return parserState{}, fmt.Errorf("decode item.completed: %w", err)
+				return state, fmt.Errorf("decode item.completed: %w", err)
 			}
 			if item.Type == "agent_message" && item.Text != "" {
 				state.finalMessage = item.Text
@@ -545,9 +646,35 @@ func parseJSONL(reader io.Reader) (parserState, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return parserState{}, err
+		if errors.Is(err, bufio.ErrTooLong) {
+			return state, fmt.Errorf("single JSONL event exceeded the 64MiB limit: %w", err)
+		}
+		return state, err
 	}
 	return state, nil
+}
+
+func classifyRunError(message string, stderrTail string) string {
+	combined := strings.ToLower(strings.TrimSpace(message + " " + stderrTail))
+	switch {
+	case strings.Contains(combined, "401") ||
+		strings.Contains(combined, "unauthorized") ||
+		strings.Contains(combined, "not logged in") ||
+		strings.Contains(combined, "login required"):
+		return "auth"
+	case strings.Contains(combined, "429") ||
+		strings.Contains(combined, "rate limit") ||
+		strings.Contains(combined, "usage limit") ||
+		strings.Contains(combined, "quota exceeded"):
+		return "rate_limit"
+	case strings.Contains(combined, "model") &&
+		(strings.Contains(combined, "not supported") ||
+			strings.Contains(combined, "does not exist") ||
+			strings.Contains(combined, "not found")):
+		return "model_not_found"
+	default:
+		return ""
+	}
 }
 
 // unwrapCodexError extracts the innermost reason from Codex's nested

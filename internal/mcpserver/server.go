@@ -39,6 +39,8 @@ type CodexExecInput struct {
 	ReasoningEffort  string         `json:"reasoning_effort,omitempty" jsonschema:"Reasoning effort for the run, e.g. low, medium, high or xhigh. The codex_list_models tool reports which levels each model supports. If omitted, the server default is used."`
 	Profile          string         `json:"profile,omitempty" jsonschema:"Optional Codex profile override."`
 	OutputSchema     map[string]any `json:"output_schema,omitempty" jsonschema:"Optional JSON Schema object describing the desired final-message output shape."`
+	AddDirs          []string       `json:"add_dirs,omitempty" jsonschema:"Additional directories that should be writable alongside the primary workspace; each must be inside the server root or allowed dirs."`
+	Ephemeral        bool           `json:"ephemeral,omitempty" jsonschema:"Run without persisting session files; note the resulting thread_id cannot be resumed."`
 	Sandbox          string         `json:"sandbox,omitempty" jsonschema:"Sandbox mode used only when yolo is disabled in the server config. One of: read-only, workspace-write, danger-full-access."`
 	TimeoutMS        int            `json:"timeout_ms,omitempty" jsonschema:"Optional per-run timeout in milliseconds. The run is cancelled if the deadline is reached."`
 	SkipGitRepoCheck *bool          `json:"skip_git_repo_check,omitempty" jsonschema:"Override automatic git repository detection."`
@@ -123,6 +125,8 @@ func (b Builder) handleCodexExec(ctx context.Context, _ *mcp.CallToolRequest, ar
 		ReasoningEffort:  args.ReasoningEffort,
 		Profile:          args.Profile,
 		OutputSchema:     args.OutputSchema,
+		AddDirs:          args.AddDirs,
+		Ephemeral:        args.Ephemeral,
 		Sandbox:          args.Sandbox,
 		TimeoutMS:        args.TimeoutMS,
 		SkipGitRepoCheck: args.SkipGitRepoCheck,

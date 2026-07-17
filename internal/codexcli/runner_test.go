@@ -188,6 +188,119 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 	}
 }
 
+func TestRunnerAllowsValidAddDirs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	addDir := filepath.Join(root, "shared")
+	if err := os.Mkdir(addDir, 0o755); err != nil {
+		t.Fatalf("mkdir add dir: %v", err)
+	}
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-adddir"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:  "continue",
+		AddDirs: []string{"shared"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	addDirArg := getArgValue(args, "--add-dir")
+	if addDirArg != addDir {
+		t.Fatalf("expected add dir %q, got %q", addDir, addDirArg)
+	}
+}
+
+func TestRunnerRejectsAddDirOutsideAllowedRoots(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outside := t.TempDir()
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+echo "should not run" >&2
+exit 1
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:  "continue",
+		AddDirs: []string{outside},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "add_dir") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunnerEmitsEphemeralFlag(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-ephemeral"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:    "continue",
+		Ephemeral: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if !strings.Contains(string(argsData), "--ephemeral") {
+		t.Fatalf("expected --ephemeral flag in args: %q", argsData)
+	}
+}
+
 func TestRunnerWritesOutputSchemaArg(t *testing.T) {
 	t.Parallel()
 
@@ -717,15 +830,153 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
 	}
 }
 
+func TestRunnerUsesFinalMessageFallbackFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+args=("$@")
+for i in "${!args[@]}"; do
+  if [[ "${args[$i]}" == "-o" ]] && [ $((i+1)) -lt "${#args[@]}" ]; then
+    printf '%s' "fallback final message" > "${args[$((i+1))]}"
+    break
+  fi
+done
+
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-fallback"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"tool_result","text":"ignore"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	result, err := runner.Run(context.Background(), RunRequest{Prompt: "continue"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalMessage != "fallback final message" {
+		t.Fatalf("unexpected final message: %q", result.FinalMessage)
+	}
+}
+
+func TestRunnerCleansUpFinalMessageFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+args=("$@")
+printf '%s\n' "$@" > "`+filepath.Join(root, `args.txt`)+`"
+finalPath=""
+for i in "${!args[@]}"; do
+  if [[ "${args[$i]}" == "-o" ]] && [ $((i+1)) -lt "${#args[@]}" ]; then
+    finalPath="${args[$((i+1))]}"
+  fi
+done
+echo "fallback final message" > "$finalPath"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-cleanup"}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{
+		Prompt:       "continue",
+		OutputSchema: map[string]any{"type": "object"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(filepath.Join(root, `args.txt`))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsData)
+	outputPath := getArgValue(args, "--output-schema")
+	if outputPath == "" {
+		t.Fatalf("expected --output-schema flag, got %q", args)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("expected temporary output schema file to be removed after run")
+	}
+	finalPath := getArgValue(args, "-o")
+	if finalPath == "" {
+		t.Fatalf("expected -o flag, got %q", args)
+	}
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Fatalf("expected temporary final message file to be removed after run")
+	}
+}
+
 func TestParseJSONLMalformed(t *testing.T) {
 	t.Parallel()
 
-	_, err := parseJSONL(strings.NewReader("{\"type\":\"thread.started\"}\nnot-json\n"))
+	state, err := parseJSONL(strings.NewReader("{\"type\":\"thread.started\",\"thread_id\":\"thread-parse\"}\nnot-json\n"))
 	if err == nil {
 		t.Fatal("expected error")
 	}
+	if state.eventCount != 2 {
+		t.Fatalf("unexpected event count: %+v", state)
+	}
 	if !strings.Contains(err.Error(), "decode event 2") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunnerRunParseErrorIncludesContext(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initGitRepo(t, root)
+	codexPath := writeExecutable(t, root, fakeCodexScript(`#!/usr/bin/env bash
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-parse"}'
+echo "stderr noise" >&2
+echo not-json
+`))
+
+	runner := NewRunner(RunnerConfig{
+		CodexBin:          codexPath,
+		Root:              root,
+		DefaultYolo:       true,
+		DefaultModel:      "gpt-5.4",
+		DefaultSandbox:    "workspace-write",
+		MaxConcurrentRuns: 1,
+	}, testLogger())
+
+	_, err := runner.Run(context.Background(), RunRequest{Prompt: "continue"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "parse codex output") {
+		t.Fatalf("expected parse error context, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "thread_id=thread-parse") {
+		t.Fatalf("expected thread id in parse error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "events=2") {
+		t.Fatalf("expected event count in parse error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "exit_code=0") {
+		t.Fatalf("expected exit code in parse error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stderr noise") {
+		t.Fatalf("expected stderr tail in parse error, got: %v", err)
 	}
 }
 
@@ -833,6 +1084,58 @@ func TestUnwrapCodexError(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestClassifyRunErrorKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		message string
+		stderr  string
+		want    string
+	}{
+		{name: "auth message", message: "status 401 unauthorized", want: "auth"},
+		{name: "not logged in", message: "not logged in", want: "auth"},
+		{name: "login required", message: "login required", want: "auth"},
+		{name: "rate limit", message: "rate limit exceeded", want: "rate_limit"},
+		{name: "usage limit", message: "usage limit reached", want: "rate_limit"},
+		{name: "quota exceeded", message: "quota exceeded", want: "rate_limit"},
+		{name: "model not supported", message: "model does not exist", want: "model_not_found"},
+		{name: "not found", message: "model foo not found", want: "model_not_found"},
+		{name: "generic", message: "network timeout", want: ""},
+		{name: "generic + stderr auth", message: "network timeout", stderr: "401 Unauthorized", want: "auth"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyRunError(tt.message, tt.stderr)
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestRunErrorErrorIncludesKindAndThreadID(t *testing.T) {
+	t.Parallel()
+
+	runErr := &RunError{
+		Err:      errors.New("boom"),
+		ExitCode: 7,
+		Kind:     "rate_limit",
+		ThreadID: "thread-err",
+	}
+
+	msg := runErr.Error()
+	if !strings.Contains(msg, "codex exited with code 7 (kind=rate_limit)") {
+		t.Fatalf("expected kind in error, got %q", msg)
+	}
+	if !strings.Contains(msg, "[thread_id=thread-err]") {
+		t.Fatalf("expected thread id suffix in error, got %q", msg)
 	}
 }
 

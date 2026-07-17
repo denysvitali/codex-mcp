@@ -100,6 +100,8 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 		ReasoningEffort:  "high",
 		Profile:          "fast",
 		OutputSchema:     map[string]any{"type": "object"},
+		AddDirs:          []string{"extra"},
+		Ephemeral:        true,
 		Sandbox:          "read-only",
 		TimeoutMS:        123,
 		SkipGitRepoCheck: &skip,
@@ -114,6 +116,12 @@ func TestHandleCodexExecForwardsRequest(t *testing.T) {
 	req := runner.req
 	if req.Prompt != "ship it" || req.Cwd != "repo" || req.ThreadID != "thread-1" || req.Model != "gpt-test" || req.ReasoningEffort != "high" || req.Profile != "fast" || req.Sandbox != "read-only" || req.TimeoutMS != 123 {
 		t.Fatalf("unexpected request forwarded to runner: %+v", req)
+	}
+	if !reflect.DeepEqual(req.AddDirs, []string{"extra"}) {
+		t.Fatalf("expected add_dirs to be forwarded: %+v", req.AddDirs)
+	}
+	if !req.Ephemeral {
+		t.Fatalf("expected ephemeral to be forwarded: %+v", req.Ephemeral)
 	}
 	if req.SkipGitRepoCheck == nil || !*req.SkipGitRepoCheck {
 		t.Fatalf("expected skip_git_repo_check to be forwarded: %+v", req)
@@ -332,6 +340,12 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 	if _, ok := properties["output_schema"]; !ok {
 		t.Fatalf("expected codex_exec input schema to include output_schema, got %v", properties)
+	}
+	if _, ok := properties["add_dirs"]; !ok {
+		t.Fatalf("expected codex_exec input schema to include add_dirs, got %v", properties)
+	}
+	if _, ok := properties["ephemeral"]; !ok {
+		t.Fatalf("expected codex_exec input schema to include ephemeral, got %v", properties)
 	}
 
 	execResult, err := session.CallTool(ctx, &mcp.CallToolParams{

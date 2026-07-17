@@ -172,6 +172,8 @@ Input fields:
 | `reasoning_effort` | No | Reasoning effort for the run (e.g. `low`, `medium`, `high`, `xhigh`). `codex_list_models` reports which levels each model supports. Defaults to the server default |
 | `profile` | No | Per-request Codex profile override |
 | `output_schema` | No | JSON Schema object describing the desired shape of `final_message` |
+| `add_dirs` | No | Additional directories that should be writable alongside the primary workspace. Each must be inside the server root or configured `allow_dirs`. |
+| `ephemeral` | No | Run without persisting session files; the returned `thread_id` should not be reused for resumption. |
 | `sandbox` | No | Per-request sandbox override, used only when yolo is disabled in server config |
 | `timeout_ms` | No | Per-request timeout in milliseconds |
 | `skip_git_repo_check` | No | Overrides automatic Git repository detection |
@@ -228,8 +230,8 @@ At runtime the flow is:
 2. `codex-mcp` loads config, resolves the allowed roots, and checks that the Codex binary exists.
 3. An MCP client invokes `codex_exec`.
 4. The server validates input and forwards the request to the runner.
-5. The runner resolves `cwd`, ensures it stays within the allowed directories, constructs the `codex exec` command, and executes it.
-6. Codex JSONL output is parsed into a structured MCP tool result.
+5. The runner resolves `cwd` and any `add_dirs`, ensures they stay within the allowed directories, constructs the `codex exec` command, and executes it.
+6. The runner writes `-o <tempfile>` so it can use the final assistant message as a fallback if JSONL parsing does not return `item.completed` with `agent_message`, then parses the JSONL output into a structured MCP tool result.
 
 ## Security Considerations
 
